@@ -1,0 +1,24 @@
+# Ignore folders chứa data
+Audio/
+Cleaned/
+Log/
+Raw/
+temp_audio/
+Translate/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual env (nếu có)
+venv/
+.env/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Log files
+*.log
