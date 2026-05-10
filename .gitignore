@@ -14,6 +14,7 @@ __pycache__/
 
 # Virtual env (nếu có)
 venv/
+.venv/
 .env/
 
 # OS files

@@ -1,0 +1,5 @@
+selenium
+PyMuPDF
+edge-tts
+docx2txt
+rich

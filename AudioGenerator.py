@@ -10,6 +10,7 @@ import datetime
 import warnings
 import re
 import multiprocessing
+import sys
 from multiprocessing import Process, Queue, Semaphore
 
 # pip install rich
@@ -19,6 +20,11 @@ from rich.progress import BarColumn, TextColumn
 from rich import box
 
 warnings.filterwarnings("ignore")
+
+# Auto-detect ffmpeg trong bin/
+_BIN_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bin")
+if os.path.isdir(_BIN_DIR):
+    os.environ["PATH"] = _BIN_DIR + os.pathsep + os.environ["PATH"]
 
 if os.name == "nt":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
