@@ -27,7 +27,6 @@ Tự động tải chương truyện từ web → trích xuất text → làm s�
 |---|---|
 | Python | 3.10 trở lên |
 | Google Chrome | Bản mới nhất |
-| ChromeDriver | **Phải khớp version Chrome** |
 | ffmpeg + ffprobe | Để merge audio (xem hướng dẫn bên dưới) |
 | RAM | Tối thiểu 4GB, khuyến nghị 8GB+ |
 | Kết nối mạng | Bắt buộc cho Bước 1 và Bước 4 |
@@ -50,11 +49,7 @@ bin/
 
 `AudioGenerator.py` sẽ tự tìm ffmpeg trong `bin/` khi chạy, không cần cấu hình thêm.
 
-### ChromeDriver
-
-1. Kiểm tra version Chrome hiện tại: mở Chrome → vào `chrome://settings/help`
-2. Tải ChromeDriver khớp version tại https://chromedriver.chromium.org/downloads
-3. Bỏ `chromedriver.exe` vào thư mục `bin/` cùng với ffmpeg
+> **ChromeDriver:** Selenium 4.6+ có **Selenium Manager** tự tải và quản lý ChromeDriver phù hợp với version Chrome hiện tại — không cần cài tay.
 
 ---
 
@@ -95,10 +90,9 @@ rich
 ```
 project/
 │
-├── bin/                        # ffmpeg, ffprobe, chromedriver
+├── bin/                        # ffmpeg, ffprobe
 │   ├── ffmpeg.exe
-│   ├── ffprobe.exe
-│   └── chromedriver.exe
+│   └── ffprobe.exe
 │
 ├── Raw/                        # PDF thô tải về (output Bước 1)
 ├── Translate/                  # Text trích xuất từ PDF (output Bước 2)
@@ -243,7 +237,7 @@ từ cần bảo toàn dù chứa keyword xấu
 (tự động — các dòng lặp lại ≥5 lần chưa được phân loại)
 ```
 
-**Lần đầu chạy:** Nếu chưa có file keyword, TextCleaner vẫn chạy được nhưng không xóa gì. Tạo file `Log/TextCleaner_KeyWord.log` và điền keyword theo cấu trúc trên.
+**Lần đầu chạy:** Nếu chưa có file keyword, script sẽ **tự tạo** `Log/TextCleaner_KeyWord.log` với cấu trúc rỗng — không cần tạo tay. Chạy lần đầu xong sẽ có danh sách `[SUSPECTED]` để bắt đầu phân loại.
 
 #### Cấu hình
 
@@ -323,15 +317,7 @@ Chỉ cần có vài file PDF trong `Raw/` là chạy được. Kiểm tra:
 
 ### Test Bước 3 — TextCleaner
 
-Trước khi chạy lần đầu, tạo file `Log/TextCleaner_KeyWord.log` tối giản:
-
-```
-[DELETE]
-
-[KEEP]
-
-[SUSPECTED]
-```
+Lần đầu chạy, nếu `Log/TextCleaner_KeyWord.log` chưa tồn tại, script sẽ **tự tạo file rỗng** đúng cấu trúc — không cần tạo tay.
 
 Sau lần chạy đầu tiên:
 - Xem section `[SUSPECTED]` — những dòng nào lặp lại thường xuyên và thực sự là rác?

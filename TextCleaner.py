@@ -42,6 +42,9 @@ def load_keywords():
     suspected_keys = set()
 
     if not os.path.exists(KEYWORD_FILE):
+        with open(KEYWORD_FILE, "w", encoding="utf-8") as f:
+            f.write("[DELETE]\n\n[KEEP]\n\n[SUSPECTED]\n")
+        logger.info("Tạo mới KEYWORD_FILE: %s", KEYWORD_FILE)
         return delete_keys, keep_keys, suspected_keys
 
     section = None
