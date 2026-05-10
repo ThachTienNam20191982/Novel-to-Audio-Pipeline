@@ -1,4 +1,5 @@
-import timeimport os
+import time
+import os
 import base64
 import fitz
 import logging
