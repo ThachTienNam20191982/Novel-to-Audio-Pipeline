@@ -54,6 +54,9 @@ THROTTLE_KEYWORDS = ["1015", "1008", "connection", "reset", "timeout", "too many
 THROTTLE_BASE_DELAY = 15
 THROTTLE_BACKOFF    = 20
 
+# 0 = không giới hạn, >0 = tối đa N chunk mỗi part → output: prefix_part1.mp3, part2...
+MAX_CHUNKS_PER_PART = 400
+
 SUPPORTED_EXT = (".docx", ".txt")
 
 LOG_FILE   = "Log/AudioGenerator_Log.log"
@@ -159,12 +162,12 @@ def tts_save_retry(text, out_file, prefix, chunk_id, loop):
     return False
 
 # ================= VERIFY =================
-def verify_chunks_exist(chunks, temp_dir, prefix):
+def verify_chunks_exist(chunks, temp_dir, prefix, chunk_offset=0):
     missing = []
     for i in range(len(chunks)):
-        path = os.path.join(temp_dir, f"{prefix}_{i}.mp3")
+        path = os.path.join(temp_dir, f"{prefix}_{i + chunk_offset}.mp3")
         if not os.path.exists(path) or os.path.getsize(path) < 1000:
-            missing.append(i)
+            missing.append(i + chunk_offset)
     if missing:
         log(f"❌ Missing chunks: {missing}")
         return False
@@ -188,7 +191,7 @@ def verify_merged(files, output_file, prefix, durations):
     return False
 
 # ================= GENERATE =================
-def generate_chunks(chunks, temp_dir, prefix, loop, status_q, worker_id):
+def generate_chunks(chunks, temp_dir, prefix, loop, status_q, worker_id, chunk_offset=0):
     ok_files  = []
     durations = {}
     total     = len(chunks)
@@ -196,7 +199,7 @@ def generate_chunks(chunks, temp_dir, prefix, loop, status_q, worker_id):
     log(f"START {prefix} chunks={total}")
 
     for i, chunk in enumerate(chunks):
-        out = os.path.join(temp_dir, f"{prefix}_{i}.mp3")
+        out = os.path.join(temp_dir, f"{prefix}_{i + chunk_offset}.mp3")
 
         # ✅ Resume: verify bằng duration, không chỉ size
         if os.path.exists(out) and os.path.getsize(out) > 2000:
@@ -211,15 +214,15 @@ def generate_chunks(chunks, temp_dir, prefix, loop, status_q, worker_id):
                 # size OK nhưng audio corrupt → xóa, generate lại
                 try:
                     os.remove(out)
-                    log(f"🧹 DELETE corrupt resume chunk {i} (duration=0)")
+                    log(f"🧹 DELETE corrupt resume chunk {i + chunk_offset} (duration=0)")
                 except:
                     pass
 
-        success = tts_save_retry(chunk, out, prefix, i, loop)
+        success = tts_save_retry(chunk, out, prefix, i + chunk_offset, loop)
 
         if not success:
-            log(f"🚨 ABORT FILE {prefix} at chunk {i}")
-            status_q.put(("fail_chunk", worker_id, prefix, i))
+            log(f"🚨 ABORT FILE {prefix} at chunk {i + chunk_offset}")
+            status_q.put(("fail_chunk", worker_id, prefix, i + chunk_offset))
             return None, {}
 
         d = get_duration(out)
@@ -275,51 +278,78 @@ def worker(file_queue, worker_id, status_q):
 
         name   = os.path.basename(path)
         prefix = os.path.splitext(name)[0]
-        output_file = os.path.join(OUTPUT_DIR, prefix + ".mp3")
 
         log(f"START FILE {name}")
         status_q.put(("state", worker_id, "check", prefix, 0, 1))
-
-        if os.path.exists(output_file) and is_audio_valid(output_file):
-            log(f"SKIP {name} (valid output)")
-            status_q.put(("done", worker_id, prefix, "skip"))
-            continue
-
-        temp_dir = os.path.join(TEMP_ROOT, prefix)
-        os.makedirs(temp_dir, exist_ok=True)
 
         text   = read_text(path)
         chunks = split_text(text)
         total  = len(chunks)
 
-        status_q.put(("state", worker_id, "generate", prefix, 0, total))
+        # ===== Chia parts nếu cần =====
+        if MAX_CHUNKS_PER_PART > 0 and total > MAX_CHUNKS_PER_PART:
+            parts = [chunks[i:i + MAX_CHUNKS_PER_PART]
+                     for i in range(0, total, MAX_CHUNKS_PER_PART)]
+        else:
+            parts = [chunks]
 
-        files, durations = generate_chunks(chunks, temp_dir, prefix, loop, status_q, worker_id)
+        any_fail = False
 
-        if files is None:
-            status_q.put(("done", worker_id, prefix, "fail"))
-            log(f"❌ FILE FAIL {name}")
-            continue
+        for part_idx, part_chunks in enumerate(parts):
+            chunk_offset = part_idx * MAX_CHUNKS_PER_PART if MAX_CHUNKS_PER_PART > 0 else 0
 
-        status_q.put(("state", worker_id, "verify", prefix, total, total))
-        if not verify_chunks_exist(chunks, temp_dir, prefix):
-            status_q.put(("done", worker_id, prefix, "fail"))
-            log(f"❌ CHUNK FAIL {name}")
-            continue
+            # Tên output: 1 part giữ nguyên, nhiều part thêm _part1, _part2...
+            if len(parts) == 1:
+                output_file = os.path.join(OUTPUT_DIR, f"{prefix}.mp3")
+                part_label  = prefix
+                temp_dir    = os.path.join(TEMP_ROOT, prefix)
+            else:
+                output_file = os.path.join(OUTPUT_DIR, f"{prefix}_part{part_idx + 1}.mp3")
+                part_label  = f"{prefix}_part{part_idx + 1}"
+                temp_dir    = os.path.join(TEMP_ROOT, f"{prefix}_part{part_idx + 1}")
 
-        status_q.put(("state", worker_id, "merge", prefix, total, total))
-        list_file = create_list(files, temp_dir)
-        merge_audio(list_file, output_file)
+            # Skip nếu part đã có output valid
+            if os.path.exists(output_file) and is_audio_valid(output_file):
+                log(f"SKIP {part_label} (valid output)")
+                status_q.put(("done", worker_id, part_label, "skip"))
+                continue
 
-        if not verify_merged(files, output_file, prefix, durations):
-            status_q.put(("done", worker_id, prefix, "fail"))
-            log(f"❌ MERGE FAIL {name}")
-            continue
+            os.makedirs(temp_dir, exist_ok=True)
+            status_q.put(("state", worker_id, "generate", part_label, 0, len(part_chunks)))
 
-        shutil.rmtree(temp_dir)
-        log(f"✅ DONE FILE {name}")
-        status_q.put(("done", worker_id, prefix, "ok"))
+            files, durations = generate_chunks(
+                part_chunks, temp_dir, prefix, loop, status_q, worker_id,
+                chunk_offset=chunk_offset
+            )
 
+            if files is None:
+                status_q.put(("done", worker_id, part_label, "fail"))
+                log(f"❌ FILE FAIL {part_label}")
+                any_fail = True
+                continue  # thử part tiếp thay vì bỏ cả file
+
+            status_q.put(("state", worker_id, "verify", part_label, len(part_chunks), len(part_chunks)))
+            if not verify_chunks_exist(part_chunks, temp_dir, prefix, chunk_offset=chunk_offset):
+                status_q.put(("done", worker_id, part_label, "fail"))
+                log(f"❌ CHUNK FAIL {part_label}")
+                any_fail = True
+                continue
+
+            status_q.put(("state", worker_id, "merge", part_label, len(part_chunks), len(part_chunks)))
+            list_file = create_list(files, temp_dir)
+            merge_audio(list_file, output_file)
+
+            if not verify_merged(files, output_file, prefix, durations):
+                status_q.put(("done", worker_id, part_label, "fail"))
+                log(f"❌ MERGE FAIL {part_label}")
+                any_fail = True
+                continue
+
+            shutil.rmtree(temp_dir)
+            log(f"✅ DONE {part_label} ({part_idx + 1}/{len(parts)})")
+            status_q.put(("done", worker_id, part_label, "ok"))
+
+        log(f"{'⚠️ PARTIAL' if any_fail else '✅ DONE'} FILE {name}")
         time.sleep(random.uniform(*DELAY_BETWEEN_FILES))
 
     status_q.put(("state", worker_id, "idle", "—", 0, 1))
