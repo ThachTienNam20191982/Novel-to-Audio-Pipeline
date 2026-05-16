@@ -5,6 +5,7 @@ Log/
 Raw/
 temp_audio/
 Translate/
+Merged/
 
 # Python cache
 __pycache__/
