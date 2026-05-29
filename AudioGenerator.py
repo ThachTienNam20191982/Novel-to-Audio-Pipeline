@@ -39,7 +39,7 @@ VOICE = "vi-VN-HoaiMyNeural"
 CHUNK_SIZE = 1500
 SENTENCE_SPLIT_REGEX = r'(?<=[.!?…])\s+'
 
-MAX_RETRY = 5
+MAX_RETRY = 10
 RETRY_BASE_DELAY = 1.0
 RETRY_BACKOFF = 1.5
 
@@ -53,6 +53,9 @@ WORKER_STAGGER = 2.0
 THROTTLE_KEYWORDS = ["1015", "1008", "connection", "reset", "timeout", "too many", "no audio"]
 THROTTLE_BASE_DELAY = 15
 THROTTLE_BACKOFF    = 20
+
+# 0 = không giới hạn, >0 = tối đa N chunk mỗi file mp3 → Prefix_Part1.mp3, Part2...
+MAX_CHUNKS_PER_PART = 500
 
 SUPPORTED_EXT = (".docx", ".txt")
 
@@ -280,17 +283,30 @@ def worker(file_queue, worker_id, status_q):
         log(f"START FILE {name}")
         status_q.put(("state", worker_id, "check", prefix, 0, 1))
 
-        if os.path.exists(output_file) and is_audio_valid(output_file):
+        # Đọc text sớm để tính số parts, từ đó check skip đúng
+        text   = read_text(path)
+        chunks = split_text(text)
+        total  = len(chunks)
+
+        # Tính số parts và kiểm tra tất cả parts đã có output valid chưa
+        if MAX_CHUNKS_PER_PART > 0 and total > MAX_CHUNKS_PER_PART:
+            import math
+            n_parts = math.ceil(total / MAX_CHUNKS_PER_PART)
+            all_parts_valid = all(
+                os.path.exists(os.path.join(OUTPUT_DIR, f"{prefix}_Part{p}.mp3")) and
+                is_audio_valid(os.path.join(OUTPUT_DIR, f"{prefix}_Part{p}.mp3"))
+                for p in range(1, n_parts + 1)
+            )
+        else:
+            all_parts_valid = os.path.exists(output_file) and is_audio_valid(output_file)
+
+        if all_parts_valid:
             log(f"SKIP {name} (valid output)")
             status_q.put(("done", worker_id, prefix, "skip"))
             continue
 
         temp_dir = os.path.join(TEMP_ROOT, prefix)
         os.makedirs(temp_dir, exist_ok=True)
-
-        text   = read_text(path)
-        chunks = split_text(text)
-        total  = len(chunks)
 
         status_q.put(("state", worker_id, "generate", prefix, 0, total))
 
@@ -308,17 +324,47 @@ def worker(file_queue, worker_id, status_q):
             continue
 
         status_q.put(("state", worker_id, "merge", prefix, total, total))
-        list_file = create_list(files, temp_dir)
-        merge_audio(list_file, output_file)
 
-        if not verify_merged(files, output_file, prefix, durations):
-            status_q.put(("done", worker_id, prefix, "fail"))
-            log(f"❌ MERGE FAIL {name}")
+        # Chia files thành batches nếu vượt MAX_CHUNKS_PER_PART
+        if MAX_CHUNKS_PER_PART > 0 and len(files) > MAX_CHUNKS_PER_PART:
+            batches = [files[i:i + MAX_CHUNKS_PER_PART]
+                       for i in range(0, len(files), MAX_CHUNKS_PER_PART)]
+        else:
+            batches = [files]
+
+        any_merge_fail = False
+        for part_idx, batch in enumerate(batches):
+            if len(batches) == 1:
+                part_output = output_file
+                part_label  = prefix
+            else:
+                part_output = os.path.join(OUTPUT_DIR, f"{prefix}_Part{part_idx + 1}.mp3")
+                part_label  = f"{prefix}_Part{part_idx + 1}"
+
+            # Skip nếu part đã có output valid
+            if os.path.exists(part_output) and is_audio_valid(part_output):
+                log(f"SKIP {part_label} (valid output)")
+                status_q.put(("done", worker_id, part_label, "skip"))
+                continue
+
+            list_file = create_list(batch, temp_dir)
+            merge_audio(list_file, part_output)
+
+            if not verify_merged(batch, part_output, part_label, durations):
+                status_q.put(("done", worker_id, part_label, "fail"))
+                log(f"❌ MERGE FAIL {part_label}")
+                any_merge_fail = True
+                continue
+
+            log(f"✅ DONE {part_label} ({part_idx + 1}/{len(batches)})")
+            status_q.put(("done", worker_id, part_label, "ok"))
+
+        if any_merge_fail:
+            log(f"⚠️ {name} có part merge thất bại (KEEP TEMP)")
             continue
 
         shutil.rmtree(temp_dir)
         log(f"✅ DONE FILE {name}")
-        status_q.put(("done", worker_id, prefix, "ok"))
 
         time.sleep(random.uniform(*DELAY_BETWEEN_FILES))
 
