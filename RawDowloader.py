@@ -19,12 +19,30 @@ LOG_PATH       = "Log"
 LOG_FILE_NAME  = "RawDownloader_log.log"
 LOG_FILE       = os.path.join(LOG_PATH, LOG_FILE_NAME)
 
-START_CHAPTER = 1
-END_CHAPTER   = 1876
+# ------------------------------------------------------------------------------
+# ===== CRAWL MODE =============================================================
+# CRAWL_MODE = "index"    : dùng URL_TEMPLATE + START/END_CHAPTER như cũ.
+# CRAWL_MODE = "navigate" : bắt đầu từ URL_FIRST_CHAPTER, tự tìm nút "Chương sau"
+#                           để lần lượt thu thập URL từng chương, sau đó download.
+# ------------------------------------------------------------------------------
+CRAWL_MODE = "navigate"
 
+# Dùng khi CRAWL_MODE = "index": sinh URL theo template.
+# Dùng khi CRAWL_MODE = "navigate": giới hạn số chương thu thập (START/END_CHAPTER).
+#   START_CHAPTER : bỏ qua N chương đầu, bắt đầu lưu từ chương thứ N.
+#   END_CHAPTER   : dừng thu thập khi đạt đến chương này (kể cả chưa hết truyện).
+#                   Đặt END_CHAPTER = 999999 nếu muốn lấy hết đến chương cuối.
+START_CHAPTER = 1
+END_CHAPTER   = 358
 URL_TEMPLATE = "https://www.tvtruyen.com/dai-can-truong-sinh/chuong-{}/"
 
-WORKER_COUNT = 10
+# Dùng khi CRAWL_MODE = "navigate"
+URL_FIRST_CHAPTER = "https://wikicv.net/truyen/german-linh-danh-thue-chi-vuong/chuong-1-xui-quay-luu-lac-ky-si-Wmv%7EEsQsRFaX0vno"
+
+# Tên file log lưu danh sách URL thu thập được (phase 1 của navigate mode)
+PREPARE_LOG_FILE = os.path.join(LOG_PATH, "RawDownloader_Prepare.log")
+
+WORKER_COUNT = 1
 
 LOAD_WAIT_TIME  = 4    # giây chờ sau khi load trang
 SCROLL_WAIT_TIME = 1.5  # giây chờ giữa mỗi lần scroll
@@ -139,45 +157,43 @@ def log_session_end():
 # ==============================================================================
 # ===== RESUME SYSTEM ==========================================================
 # ==============================================================================
-
-def load_completed_from_log():
-    """Đọc log để lấy danh sách file đã xong từ session trước."""
-    completed = set()
-    if not os.path.exists(LOG_FILE):
-        return completed
-    with open(LOG_FILE, "r", encoding="utf-8") as f:
-        for line in f:
-            if "SUCCESS:" in line or "SKIP EXISTING:" in line:
-                try:
-                    filename = line.strip().split(":")[-1].strip()
-                    completed.add(filename)
-                except Exception:
-                    pass
-    return completed
-
-
-def load_completed_from_disk():
-    """Scan thư mục SAVE_PATH, lấy tất cả file PDF đã có — không phụ thuộc log."""
-    if not os.path.exists(SAVE_PATH):
-        return set()
-    return {f for f in os.listdir(SAVE_PATH) if f.endswith(".pdf")}
-
-
 def load_completed():
     """
-    Kết hợp cả hai nguồn: log + disk.
-    - Disk: đáng tin cậy nhất, không bị mất khi log bị xóa.
-    - Log:  bắt thêm các file đã xong nhưng vì lý do nào đó bị xóa khỏi disk.
+    File được coi là hoàn chỉnh khi THỎA MÃN CẢ HAI điều kiện:
+      1. File PDF tồn tại trên disk
+      2. Có dòng SUCCESS trong log
+
+    Nhờ vậy:
+      - File tạo dở (có trên disk nhưng chưa SUCCESS) → download lại  ✓
+      - Xóa file PDF (disk không có dù log có SUCCESS) → download lại  ✓
+      - Cả hai đều thỏa mãn → skip  ✓
     """
-    from_log  = load_completed_from_log()
-    from_disk = load_completed_from_disk()
-    combined  = from_log | from_disk
+    # Lấy set từ disk
+    if os.path.exists(SAVE_PATH):
+        on_disk = {f for f in os.listdir(SAVE_PATH) if f.endswith(".pdf")}
+    else:
+        on_disk = set()
 
-    if from_disk:
-        log(f"RESUME: tìm thấy {len(from_disk)} file trên disk, "
-            f"{len(from_log)} file trong log → bỏ qua {len(combined)} file tổng cộng.")
+    # Lấy set từ log
+    in_log = set()
+    if os.path.exists(LOG_FILE):
+        with open(LOG_FILE, "r", encoding="utf-8") as f:
+            for line in f:
+                if "SUCCESS:" in line:
+                    try:
+                        filename = line.strip().split(":")[-1].strip()
+                        in_log.add(filename)
+                    except Exception:
+                        pass
 
-    return combined
+    # Chỉ skip khi có cả hai
+    completed = on_disk & in_log
+
+    if completed:
+        log(f"RESUME: {len(completed)} file hợp lệ (có trên disk và SUCCESS trong log) → bỏ qua.")
+
+    return completed
+
 
 
 # ==============================================================================
@@ -557,6 +573,190 @@ def save_pdf(driver, filename):
 
 
 # ==============================================================================
+# ===== NAVIGATE MODE — PHASE 1: THU THẬP URL =================================
+# Dùng 1 driver duy nhất, đi từ URL_FIRST_CHAPTER, bấm nút "Chương sau"
+# liên tục cho đến khi không tìm được nút hoặc URL lặp lại.
+# Kết quả lưu vào PREPARE_LOG_FILE: mỗi dòng là "index|url|filename"
+# ==============================================================================
+
+# Các keyword tìm nút "Chương sau" — thêm vào nếu gặp site dùng chữ khác
+NEXT_CHAPTER_KEYWORDS = [
+    "chương sau", "chương tiếp", "next chapter", "tiếp theo",
+    "trang sau", "next", "»", "→"
+]
+
+
+def find_next_chapter_url(driver):
+    """
+    Tìm URL chương tiếp theo bằng cách quét tất cả thẻ <a> trên trang,
+    so khớp text với NEXT_CHAPTER_KEYWORDS (không phân biệt hoa thường).
+    Trả về URL (str) hoặc None nếu không tìm thấy.
+    """
+    try:
+        links = driver.find_elements("tag name", "a")
+        for link in links:
+            text = (link.text or "").strip().lower()
+            href = (link.get_attribute("href") or "").strip()
+            if not href or href == driver.current_url:
+                continue
+            if any(kw in text for kw in NEXT_CHAPTER_KEYWORDS):
+                return href
+    except Exception:
+        pass
+    return None
+
+
+PREPARE_DONE_MARKER = "#DONE"
+
+
+def load_prepare_log():
+    """
+    Đọc PREPARE_LOG_FILE, trả về:
+      - chapters  : list of (index, url, filename) đã thu thập
+      - url_set   : set các url đã có (để tránh lặp)
+      - is_done   : True nếu file có marker #DONE — tức là đã thu thập xong,
+                    không cần verify hay tiếp tục nữa.
+    """
+    chapters = []
+    url_set  = set()
+    is_done  = False
+
+    if not os.path.exists(PREPARE_LOG_FILE):
+        return chapters, url_set, is_done
+
+    with open(PREPARE_LOG_FILE, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            if line == PREPARE_DONE_MARKER:
+                is_done = True
+                continue
+            if line.startswith("#"):
+                continue
+            parts = line.split("|")
+            if len(parts) == 3:
+                idx, url, filename = parts
+                chapters.append((int(idx), url.strip(), filename.strip()))
+                url_set.add(url.strip())
+
+    return chapters, url_set, is_done
+
+
+def mark_prepare_done():
+    """Ghi marker #DONE vào cuối PREPARE_LOG_FILE."""
+    with open(PREPARE_LOG_FILE, "a", encoding="utf-8") as f:
+        f.write(f"{PREPARE_DONE_MARKER}\n")
+        f.flush()
+        os.fsync(f.fileno())
+
+
+def append_prepare_log(index, url, filename):
+    """Ghi thêm 1 dòng vào PREPARE_LOG_FILE."""
+    with open(PREPARE_LOG_FILE, "a", encoding="utf-8") as f:
+        f.write(f"{index}|{url}|{filename}\n")
+        f.flush()
+        os.fsync(f.fileno())
+
+
+def phase1_collect_urls():
+    """
+    Phase 1: Thu thập toàn bộ URL chương bằng cách bấm nút "Chương sau".
+    - Resume được: nếu PREPARE_LOG_FILE đã có dữ liệu thì tiếp tục từ chương cuối.
+    - Nếu file có marker #DONE thì bỏ qua hoàn toàn, không mở browser.
+    - Kết thúc khi không tìm được nút tiếp theo, URL lặp, hoặc đạt END_CHAPTER.
+    Trả về list of (index, url, filename).
+    """
+    chapters, url_set, is_done = load_prepare_log()
+
+    if is_done:
+        filtered = [c for c in chapters if START_CHAPTER <= c[0] <= END_CHAPTER]
+        print(f"\n[Phase 1] Prepare log đã có marker DONE — bỏ qua phase 1.")
+        print(f"[Phase 1] Lọc theo START={START_CHAPTER} END={END_CHAPTER}: {len(filtered)}/{len(chapters)} chương.")
+        return filtered
+
+    if chapters:
+        last_index, last_url, _ = chapters[-1]
+        print(f"\n[Phase 1] Resume: đã có {len(chapters)} chương trong prepare log.")
+        print(f"[Phase 1] Tiếp tục từ chương {last_index}: {last_url[:80]}")
+        current_url = last_url
+        next_index  = last_index + 1
+        # Chỉ giữ lại chapters nằm trong range hiện tại
+        chapters = [c for c in chapters if START_CHAPTER <= c[0] <= END_CHAPTER]
+        url_set  = {c[1] for c in chapters}  # rebuild url_set từ chapters đã filter
+    else:
+        print(f"\n[Phase 1] Bắt đầu thu thập URL từ chương {START_CHAPTER} đến {END_CHAPTER}.")
+        print(f"[Phase 1] URL đầu tiên: {URL_FIRST_CHAPTER}")
+        with open(PREPARE_LOG_FILE, "w", encoding="utf-8") as f:
+            f.write(f"# Prepare log — mỗi dòng: index|url|filename\n")
+        current_url = None
+        next_index  = 1
+
+    driver = create_driver()
+
+    try:
+        # Nếu resume, load trang cuối để tìm nút tiếp theo từ đó
+        if current_url:
+            driver.get(current_url)
+            time.sleep(LOAD_WAIT_TIME)
+            next_url = find_next_chapter_url(driver)
+            if not next_url or next_url in url_set:
+                print("[Phase 1] Đã đến chương cuối (resume check). Không cần thu thập thêm.")
+                mark_prepare_done()
+                return chapters
+            current_url = next_url
+        else:
+            current_url = URL_FIRST_CHAPTER
+
+        while True:
+            if current_url in url_set:
+                print(f"\n[Phase 1] URL lặp lại → đã đến chương cuối. Tổng: {len(chapters)} chương.")
+                mark_prepare_done()
+                break
+
+            driver.get(current_url)
+            time.sleep(LOAD_WAIT_TIME)
+
+            if next_index < START_CHAPTER:
+                print(f"\r[Phase 1] Bỏ qua chương {next_index} (< START_CHAPTER={START_CHAPTER})", end="", flush=True)
+                url_set.add(current_url)
+            else:
+                filename = f"Chuong_{next_index}.pdf"
+                chapters.append((next_index, current_url, filename))
+                url_set.add(current_url)
+                append_prepare_log(next_index, current_url, filename)
+                print(f"\r[Phase 1] Thu thập: chương {next_index}/{END_CHAPTER} — {current_url[:70]}", end="", flush=True)
+
+            # Tăng index ngay sau khi xử lý xong chương hiện tại
+            next_index += 1
+
+            # Dừng nếu đã đủ số chương — trước khi tìm và load trang tiếp
+            if next_index > END_CHAPTER:
+                print(f"\n[Phase 1] Đã đạt END_CHAPTER ({END_CHAPTER}). Dừng thu thập.")
+                mark_prepare_done()
+                break
+
+            next_url = find_next_chapter_url(driver)
+
+            if not next_url:
+                print(f"\n[Phase 1] Không tìm thấy nút chương sau → đã đến chương cuối. Tổng: {len(chapters)} chương.")
+                mark_prepare_done()
+                break
+
+            if next_url in url_set:
+                print(f"\n[Phase 1] Nút chương sau dẫn về URL cũ → đã đến chương cuối. Tổng: {len(chapters)} chương.")
+                mark_prepare_done()
+                break
+
+            current_url = next_url
+
+    finally:
+        driver.quit()
+
+    return chapters
+
+
+# ==============================================================================
 # ===== WORKER =================================================================
 # ==============================================================================
 
@@ -614,18 +814,15 @@ def worker(queue, completed_set, total, counter):
 # ===== MAIN ===================================================================
 # ==============================================================================
 
-def main():
-    log_session_start()
-
+def run_download(chapters):
+    """Phase 2: Download song song các chương từ danh sách (index, url, filename)."""
     completed = load_completed()
     q         = Queue()
-    total     = END_CHAPTER - START_CHAPTER + 1
+    total     = len(chapters)
     counter   = [0]
 
-    for i in range(START_CHAPTER, END_CHAPTER + 1):
-        url      = URL_TEMPLATE.format(i)
-        filename = f"Chuong_{i}.pdf"
-        q.put((i, url, filename))
+    for item in chapters:
+        q.put(item)
 
     threads = []
     for _ in range(WORKER_COUNT):
@@ -640,7 +837,42 @@ def main():
     for t in threads:
         t.join()
 
-    print("\nHoàn thành!")
+    print("\nHoàn thành download!")
+
+
+def main():
+    log_session_start()
+
+    if CRAWL_MODE == "navigate":
+        # ── Phase 1: Thu thập URL (1 worker, lưu vào Prepare log) ──────────────
+        print("=" * 60)
+        print("CRAWL MODE: navigate")
+        print("=" * 60)
+        chapters = phase1_collect_urls()
+
+        if not chapters:
+            print("Không thu thập được chương nào. Kiểm tra lại URL_FIRST_CHAPTER.")
+            log_session_end()
+            return
+
+        # ── Phase 2: Download song song ─────────────────────────────────────────
+        print(f"\n[Phase 2] Bắt đầu download {len(chapters)} chương với {WORKER_COUNT} workers...")
+        run_download(chapters)
+
+    elif CRAWL_MODE == "index":
+        # ── Mode cũ: sinh URL theo template ─────────────────────────────────────
+        print("=" * 60)
+        print("CRAWL MODE: index")
+        print("=" * 60)
+        chapters = [
+            (i, URL_TEMPLATE.format(i), f"Chuong_{i}.pdf")
+            for i in range(START_CHAPTER, END_CHAPTER + 1)
+        ]
+        run_download(chapters)
+
+    else:
+        print(f"CRAWL_MODE không hợp lệ: '{CRAWL_MODE}'. Dùng 'index' hoặc 'navigate'.")
+
     log_session_end()
 
 
