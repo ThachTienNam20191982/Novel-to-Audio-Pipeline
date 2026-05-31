@@ -33,11 +33,11 @@ CRAWL_MODE = "navigate"
 #   END_CHAPTER   : dừng thu thập khi đạt đến chương này (kể cả chưa hết truyện).
 #                   Đặt END_CHAPTER = 999999 nếu muốn lấy hết đến chương cuối.
 START_CHAPTER = 1
-END_CHAPTER   = 358
+END_CHAPTER   = 3000
 URL_TEMPLATE = "https://www.tvtruyen.com/dai-can-truong-sinh/chuong-{}/"
 
 # Dùng khi CRAWL_MODE = "navigate"
-URL_FIRST_CHAPTER = "https://wikicv.net/truyen/german-linh-danh-thue-chi-vuong/chuong-1-xui-quay-luu-lac-ky-si-Wmv%7EEsQsRFaX0vno"
+URL_FIRST_CHAPTER = "https://www.xtruyen.vn/truyen/au-hoang-quat-khoi/chuong-1-thuong-ky-binh-cung-tuong-thuc-/"
 
 # Tên file log lưu danh sách URL thu thập được (phase 1 của navigate mode)
 PREPARE_LOG_FILE = os.path.join(LOG_PATH, "RawDownloader_Prepare.log")
@@ -157,43 +157,45 @@ def log_session_end():
 # ==============================================================================
 # ===== RESUME SYSTEM ==========================================================
 # ==============================================================================
-def load_completed():
-    """
-    File được coi là hoàn chỉnh khi THỎA MÃN CẢ HAI điều kiện:
-      1. File PDF tồn tại trên disk
-      2. Có dòng SUCCESS trong log
 
-    Nhờ vậy:
-      - File tạo dở (có trên disk nhưng chưa SUCCESS) → download lại  ✓
-      - Xóa file PDF (disk không có dù log có SUCCESS) → download lại  ✓
-      - Cả hai đều thỏa mãn → skip  ✓
-    """
-    # Lấy set từ disk
-    if os.path.exists(SAVE_PATH):
-        on_disk = {f for f in os.listdir(SAVE_PATH) if f.endswith(".pdf")}
-    else:
-        on_disk = set()
-
-    # Lấy set từ log
-    in_log = set()
-    if os.path.exists(LOG_FILE):
-        with open(LOG_FILE, "r", encoding="utf-8") as f:
-            for line in f:
-                if "SUCCESS:" in line:
-                    try:
-                        filename = line.strip().split(":")[-1].strip()
-                        in_log.add(filename)
-                    except Exception:
-                        pass
-
-    # Chỉ skip khi có cả hai
-    completed = on_disk & in_log
-
-    if completed:
-        log(f"RESUME: {len(completed)} file hợp lệ (có trên disk và SUCCESS trong log) → bỏ qua.")
-
+def load_completed_from_log():
+    """Đọc log để lấy danh sách file đã xong từ session trước."""
+    completed = set()
+    if not os.path.exists(LOG_FILE):
+        return completed
+    with open(LOG_FILE, "r", encoding="utf-8") as f:
+        for line in f:
+            if "SUCCESS:" in line or "SKIP EXISTING:" in line:
+                try:
+                    filename = line.strip().split(":")[-1].strip()
+                    completed.add(filename)
+                except Exception:
+                    pass
     return completed
 
+
+def load_completed_from_disk():
+    """Scan thư mục SAVE_PATH, lấy tất cả file PDF đã có — không phụ thuộc log."""
+    if not os.path.exists(SAVE_PATH):
+        return set()
+    return {f for f in os.listdir(SAVE_PATH) if f.endswith(".pdf")}
+
+
+def load_completed():
+    """
+    Kết hợp cả hai nguồn: log + disk.
+    - Disk: đáng tin cậy nhất, không bị mất khi log bị xóa.
+    - Log:  bắt thêm các file đã xong nhưng vì lý do nào đó bị xóa khỏi disk.
+    """
+    from_log  = load_completed_from_log()
+    from_disk = load_completed_from_disk()
+    combined  = from_log & from_disk
+
+    if from_disk:
+        log(f"RESUME: tìm thấy {len(from_disk)} file trên disk, "
+            f"{len(from_log)} file trong log → bỏ qua {len(combined)} file tổng cộng.")
+
+    return combined
 
 
 # ==============================================================================
@@ -588,17 +590,56 @@ NEXT_CHAPTER_KEYWORDS = [
 
 def find_next_chapter_url(driver):
     """
-    Tìm URL chương tiếp theo bằng cách quét tất cả thẻ <a> trên trang,
-    so khớp text với NEXT_CHAPTER_KEYWORDS (không phân biệt hoa thường).
-    Trả về URL (str) hoặc None nếu không tìm thấy.
+    Tìm URL chương tiếp theo. Dùng 3 chiến lược theo thứ tự:
+
+    1. CSS selector trực tiếp — nhanh, chính xác cho site có class cố định
+       (xtruyen: .btn.next_page, nhiều site khác: .nav-next a, .next-chap...)
+    2. Quét <a> theo text của <span> bên trong — bắt được nút dạng
+       <a><span>Chương tiếp</span><i class="icon"/></a> mà link.text bị lẫn ký tự icon
+    3. Quét <a> theo link.text toàn bộ, lọc ký tự font icon (Unicode Private Use Area)
     """
     try:
+        # Chiến lược 1: CSS selector phổ biến
+        css_selectors = [
+            "a.btn.next_page",        # xtruyen.vn
+            ".nav-next a",            # WordPress manga theme
+            "a.next-chap",
+            "a.next_chap",
+            "a#next_chap",
+            "a.nextchap",
+            "[rel='next']",
+        ]
+        for sel in css_selectors:
+            try:
+                el = driver.find_element("css selector", sel)
+                href = (el.get_attribute("href") or "").strip()
+                if href and href != driver.current_url:
+                    return href
+            except Exception:
+                continue
+
+        # Chiến lược 2: tìm <a> có <span> con khớp keyword
         links = driver.find_elements("tag name", "a")
         for link in links:
-            text = (link.text or "").strip().lower()
             href = (link.get_attribute("href") or "").strip()
             if not href or href == driver.current_url:
                 continue
+            try:
+                spans = link.find_elements("tag name", "span")
+                for span in spans:
+                    span_text = (span.text or "").strip().lower()
+                    if any(kw in span_text for kw in NEXT_CHAPTER_KEYWORDS):
+                        return href
+            except Exception:
+                continue
+
+        # Chiến lược 3: fallback — lọc ký tự Unicode Private Use Area (font icon)
+        for link in links:
+            href = (link.get_attribute("href") or "").strip()
+            if not href or href == driver.current_url:
+                continue
+            text = "".join(c for c in (link.text or "") if ord(c) < 0xE000 or ord(c) > 0xF8FF)
+            text = text.strip().lower()
             if any(kw in text for kw in NEXT_CHAPTER_KEYWORDS):
                 return href
     except Exception:
