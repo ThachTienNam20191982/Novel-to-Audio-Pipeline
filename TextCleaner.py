@@ -36,59 +36,115 @@ logger.addHandler(file_handler)
 # ===== LOAD KEYWORDS =====
 # =========================
 
+_KEYWORD_FILE_HEADER = """\
+# ============================================================
+# TextCleaner_KeyWord.log — Cấu hình keyword cho TextCleaner.py
+# ============================================================
+#
+# CÚ PHÁP
+#   - Dòng bắt đầu bằng # là comment, bị bỏ qua hoàn toàn
+#   - Mỗi section bắt đầu bằng [TÊN_SECTION] trên một dòng riêng
+#   - Keyword không phân biệt hoa/thường
+#
+# CÁC SECTION & CÁCH DÙNG
+#   [DELETE]          Xóa dòng chứa keyword (substring match)
+#                     → Thêm: quảng cáo, tên website, navigation lặp lại
+#
+#   [KEEP]            Bảo vệ dòng, ưu tiên hơn DELETE (substring match)
+#                     → Thêm: từ trùng DELETE nhưng có trong nội dung thật
+#
+#   [UI_JUNK_WORDS]   Xóa dòng khớp CHÍNH XÁC từ/cụm (exact match)
+#                     → Thêm: nút bấm 1-2 từ (Gửi, Hủy...), nhãn UI ngắn
+#                     → KHÔNG dùng cho chuỗi dài, hãy dùng [DELETE]
+#
+#   [UI_JUNK_NUMBERS] Bật/tắt xóa dòng chỉ chứa số nguyên đơn
+#                     → enabled (mặc định) hoặc disabled
+#                     → disabled khi truyện dùng số đơn làm đánh dấu phân cảnh
+#
+#   [SUSPECTED]       Tự động cập nhật sau mỗi lần chạy
+#                     → Xem qua, chuyển sang [DELETE] hoặc [KEEP] thủ công
+# ============================================================
+
+"""
+
+def _write_default_keyword_file():
+    with open(KEYWORD_FILE, "w", encoding="utf-8") as f:
+        f.write(_KEYWORD_FILE_HEADER)
+        f.write("[DELETE]\n\n")
+        f.write("[KEEP]\n\n")
+        f.write("[UI_JUNK_WORDS]\n")
+        f.write("gửi\nhủy\nsửa\nxóa\nđọc\ncũ nhất\nmới nhất\nyêu thích\n-\n–\n—\n\n")
+        f.write("[UI_JUNK_NUMBERS]\nenabled\n\n")
+        f.write("[SUSPECTED]\n")
+
+
 def load_keywords():
     delete_keys = set()
     keep_keys = set()
     suspected_keys = set()
+    ui_junk_words = set()
+    ui_junk_numbers = True      # Rule 1 bật mặc định
 
     if not os.path.exists(KEYWORD_FILE):
-        with open(KEYWORD_FILE, "w", encoding="utf-8") as f:
-            f.write("[DELETE]\n\n[KEEP]\n\n[SUSPECTED]\n")
+        _write_default_keyword_file()
         logger.info("Tạo mới KEYWORD_FILE: %s", KEYWORD_FILE)
-        return delete_keys, keep_keys, suspected_keys
+        return load_keywords()  # load lại từ file vừa tạo
 
     section = None
 
     with open(KEYWORD_FILE, "r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
+        for raw_line in f:
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
                 continue
             if line == "[DELETE]":
                 section = "delete"
-                continue
             elif line == "[KEEP]":
                 section = "keep"
-                continue
             elif line == "[SUSPECTED]":
                 section = "suspected"
-                continue
-
-            if section == "delete":
+            elif line == "[UI_JUNK_WORDS]":
+                section = "ui_junk_words"
+            elif line == "[UI_JUNK_NUMBERS]":
+                section = "ui_junk_numbers"
+            elif section == "delete":
                 delete_keys.add(line.lower())
             elif section == "keep":
                 keep_keys.add(line.lower())
             elif section == "suspected":
                 suspected_keys.add(line)
+            elif section == "ui_junk_words":
+                ui_junk_words.add(line.lower())
+            elif section == "ui_junk_numbers":
+                if line.lower() == "disabled":
+                    ui_junk_numbers = False
 
-    return delete_keys, keep_keys, suspected_keys
+    return delete_keys, keep_keys, suspected_keys, ui_junk_words, ui_junk_numbers
 
 
-# =========================
-# ===== SAVE KEYWORDS =====
-# =========================
-
-def rewrite_keyword_file(delete_keys, keep_keys, new_suspected):
+def rewrite_keyword_file(delete_keys, keep_keys, new_suspected, ui_junk_words, ui_junk_numbers):
     with open(KEYWORD_FILE, "w", encoding="utf-8") as f:
+        f.write(_KEYWORD_FILE_HEADER)
         f.write("[DELETE]\n")
         for k in sorted(delete_keys):
             f.write(k + "\n")
+        f.write("\n")
 
-        f.write("\n[KEEP]\n")
+        f.write("[KEEP]\n")
         for k in sorted(keep_keys):
             f.write(k + "\n")
+        f.write("\n")
 
-        f.write("\n[SUSPECTED]\n")
+        f.write("[UI_JUNK_WORDS]\n")
+        for k in sorted(ui_junk_words):
+            f.write(k + "\n")
+        f.write("\n")
+
+        f.write("[UI_JUNK_NUMBERS]\n")
+        f.write("enabled\n" if ui_junk_numbers else "disabled\n")
+        f.write("\n")
+
+        f.write("[SUSPECTED]\n")
         for line in sorted(new_suspected):
             f.write(line + "\n")
 
@@ -109,6 +165,30 @@ PS_INLINE_SUFFIX = re.compile(r'\s+P[/\s]?[sS]\s*[:.].*$', re.DOTALL)
 
 def clean_inline(line):
     return PS_INLINE_SUFFIX.sub('', line)
+
+
+# =========================
+# ===== UI JUNK FILTER ====
+# =========================
+
+_RE_ONLY_NUMBER = re.compile(r'^\d+$')
+
+def is_ui_junk(line, ui_junk_words, ui_junk_numbers):
+    """
+    Rule 1: Dòng chỉ chứa số nguyên (bật/tắt qua [UI_JUNK_NUMBERS])
+    Rule 2: Dòng khớp exact với từ trong [UI_JUNK_WORDS]
+    Rule 3: Dòng chỉ gồm ký tự đặc biệt, không có chữ-số
+    """
+    s = line.strip()
+    if not s:
+        return False
+    if ui_junk_numbers and _RE_ONLY_NUMBER.match(s):
+        return True
+    if s.lower() in ui_junk_words:
+        return True
+    if re.match(r'^[^\w]+$', s, re.UNICODE):
+        return True
+    return False
 
 
 # =========================
@@ -141,14 +221,19 @@ def should_add_suspected(line, delete_keys, keep_keys):
 # ===== CLEAN CORE ========
 # =========================
 
-def clean_chapter(text, delete_keys, keep_keys, suspected_counter):
+def clean_chapter(text, delete_keys, keep_keys, suspected_counter, ui_junk_words, ui_junk_numbers):
     lines = text.splitlines()
     cleaned = []
 
     for line in lines:
         line = clean_inline(line)
 
+        # Bước 1: Xóa theo keyword (DELETE/KEEP)
         if should_delete(line, delete_keys, keep_keys):
+            continue
+
+        # Bước 2: Xóa nhiễu UI (số đơn, từ nút bấm, ký tự đặc biệt)
+        if is_ui_junk(line, ui_junk_words, ui_junk_numbers):
             continue
 
         norm = normalize(line)
@@ -167,7 +252,7 @@ def clean_chapter(text, delete_keys, keep_keys, suspected_counter):
 # =========================
 
 def process_all():
-    delete_keys, keep_keys, _ = load_keywords()
+    delete_keys, keep_keys, _, ui_junk_words, ui_junk_numbers = load_keywords()
 
     files = sorted(f for f in os.listdir(INPUT_DIR) if f.endswith(".txt"))
 
@@ -197,7 +282,7 @@ def process_all():
             raw = f.read()
 
         t_start = datetime.now()
-        cleaned = clean_chapter(raw, delete_keys, keep_keys, suspected_counter)
+        cleaned = clean_chapter(raw, delete_keys, keep_keys, suspected_counter, ui_junk_words, ui_junk_numbers)
         t_end = datetime.now()
         elapsed_ms = int((t_end - t_start).total_seconds() * 1000)
 
@@ -238,7 +323,7 @@ def process_all():
         if count >= 5 and should_add_suspected(line, delete_keys, keep_keys):
             new_suspected.add(line)
 
-    rewrite_keyword_file(delete_keys, keep_keys, new_suspected)
+    rewrite_keyword_file(delete_keys, keep_keys, new_suspected, ui_junk_words, ui_junk_numbers)
 
     # =========================
     # ===== LOG SUMMARY =======
