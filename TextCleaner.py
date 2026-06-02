@@ -16,6 +16,8 @@ KEYWORD_FILE = os.path.join(LOG_DIR, "TextCleaner_KeyWord.log")
 
 HEAVY_DELETE_THRESHOLD = 10  # % — điều chỉnh ngưỡng "cắt nhiều" tại đây
 
+ADD_CHAPTER_NUMBER = True
+
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 os.makedirs(LOG_DIR, exist_ok=True)
 
@@ -157,6 +159,12 @@ def normalize(text):
     return text.lower().strip()
 
 
+def extract_chapter_header(fname):
+    """Trích số chương từ tên file, ví dụ 'Chuong_131.txt' → 'Chương 131'."""
+    m = re.search(r'(\d+)', fname)
+    return f"Chương {int(m.group(1))}" if m else None
+
+
 # =========================
 # ===== INLINE CLEAN ======
 # =========================
@@ -285,6 +293,11 @@ def process_all():
         cleaned = clean_chapter(raw, delete_keys, keep_keys, suspected_counter, ui_junk_words, ui_junk_numbers)
         t_end = datetime.now()
         elapsed_ms = int((t_end - t_start).total_seconds() * 1000)
+
+        if(ADD_CHAPTER_NUMBER):
+            header = extract_chapter_header(fname)
+            if header:
+                cleaned = header + "\n\n" + cleaned
 
         with open(out_path, "w", encoding="utf-8") as f:
             f.write(cleaned)
