@@ -184,8 +184,8 @@ def load_completed_from_disk():
 def load_completed():
     """
     Kết hợp cả hai nguồn: log + disk.
-    - Disk: đáng tin cậy nhất, không bị mất khi log bị xóa.
-    - Log:  bắt thêm các file đã xong nhưng vì lý do nào đó bị xóa khỏi disk.
+    - Disk: File đã có trên disk
+    - Log:  File đã được xác định hoàn thành trong log
     """
     from_log  = load_completed_from_log()
     from_disk = load_completed_from_disk()
