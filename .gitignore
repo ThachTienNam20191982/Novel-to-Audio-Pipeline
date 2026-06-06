@@ -15,6 +15,7 @@ Thumbs.db
 
 # Log files
 *.log
+*.json
 
 #Result file
 *.txt
