@@ -1,9 +1,9 @@
 import os
 import re
 
-folder = "Cleaned"
+folder = "Raw"
 
-pattern = re.compile(r"^Chuong_(\d+)\.txt$")
+pattern = re.compile(r"^Chuong_(\d+)\.pdf$")
 
 numbers = []
 
