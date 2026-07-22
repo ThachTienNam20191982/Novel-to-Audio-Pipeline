@@ -25,44 +25,38 @@ def extract_number(filename):
 
 txt_files.sort(key=extract_number)
 
-# Nếu merge tất cả
+# --- Tự động tính số chữ số cần đệm ---
+numbers = [extract_number(f) for f in txt_files]
+max_num = max(numbers)                     # số lớn nhất
+width = len(str(max_num))                  # số chữ số của nó
+# (Hoặc dùng max(len(str(n)) for n in numbers) nếu có số 0)
+
+# Hàm tạo tên file với width động
+def make_output_name(first, last):
+    return os.path.join(OUTPUT_FOLDER, f"Chuong{first:0{width}d}-{last:0{width}d}.txt")
+
+# --- Merge ---
 if MERGE_SIZE == 0:
-    first_chapter = extract_number(txt_files[0])
-    last_chapter = extract_number(txt_files[-1])
-
-    output_file = os.path.join(
-        OUTPUT_FOLDER,
-        f"Chuong{first_chapter:04d}-{last_chapter:04d}.txt"
-    )
-
-    with open(output_file, "w", encoding="utf-8") as outfile:
-        for file in txt_files:
-            with open(file, "r", encoding="utf-8") as infile:
+    first = numbers[0]
+    last = numbers[-1]
+    out_path = make_output_name(first, last)
+    with open(out_path, "w", encoding="utf-8") as outfile:
+        for f in txt_files:
+            with open(f, "r", encoding="utf-8") as infile:
                 outfile.write(infile.read())
                 outfile.write("\n\n")
-
-    print(f"Đã gộp {len(txt_files)} chương -> {output_file}")
-
+    print(f"Đã gộp {len(txt_files)} chương -> {out_path}")
 else:
     total = len(txt_files)
-
     for i in range(0, total, MERGE_SIZE):
-        batch = txt_files[i:i + MERGE_SIZE]
-
-        first_chapter = extract_number(batch[0])
-        last_chapter = extract_number(batch[-1])
-
-        output_file = os.path.join(
-            OUTPUT_FOLDER,
-            f"Chuong{first_chapter:04d}-{last_chapter:04d}.txt"
-        )
-
-        with open(output_file, "w", encoding="utf-8") as outfile:
-            for file in batch:
-                with open(file, "r", encoding="utf-8") as infile:
+        batch = txt_files[i:i+MERGE_SIZE]
+        first = extract_number(batch[0])
+        last = extract_number(batch[-1])
+        out_path = make_output_name(first, last)
+        with open(out_path, "w", encoding="utf-8") as outfile:
+            for f in batch:
+                with open(f, "r", encoding="utf-8") as infile:
                     outfile.write(infile.read())
                     outfile.write("\n\n")
-
-        print(f"Đã tạo: {output_file} ({len(batch)} chương)")
-
+        print(f"Đã tạo: {out_path} ({len(batch)} chương)")
     print("Hoàn thành.")
