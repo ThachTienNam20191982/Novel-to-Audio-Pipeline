@@ -32,7 +32,7 @@ if MERGE_SIZE == 0:
 
     output_file = os.path.join(
         OUTPUT_FOLDER,
-        f"Chuong{first_chapter:03d}-{last_chapter:03d}.txt"
+        f"Chuong{first_chapter:04d}-{last_chapter:04d}.txt"
     )
 
     with open(output_file, "w", encoding="utf-8") as outfile:
@@ -54,7 +54,7 @@ else:
 
         output_file = os.path.join(
             OUTPUT_FOLDER,
-            f"Chuong{first_chapter:03d}-{last_chapter:03d}.txt"
+            f"Chuong{first_chapter:04d}-{last_chapter:04d}.txt"
         )
 
         with open(output_file, "w", encoding="utf-8") as outfile:
