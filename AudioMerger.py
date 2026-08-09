@@ -31,7 +31,7 @@ OUTPUT_BITRATE = "192k"    # Bitrate file merged (64k / 128k / 192k / 320k)
 
 # --- Tên file output ---
 # Ví dụ: OUTPUT_PREFIX = "Truyen" → Truyen_Chuong_001-010.mp3
-OUTPUT_PREFIX = "Merged"
+OUTPUT_PREFIX = "Kỵ sĩ huyết mạch"
 
 # --- Resume ---
 # True  = bỏ qua file merged đã tồn tại (an toàn khi bị kill giữa chừng)
@@ -218,10 +218,10 @@ def build_groups(files_with_dur: list) -> list:
 # OUTPUT NAME
 # =============================================================================
 
-def group_output_name(group: list) -> str:
+def group_output_name(group: list, index: int) -> str:
     """
-    Sinh tên file output từ nhóm.
-    Ví dụ: Merged_Chuong_001-010.mp3 hoặc Merged_001-010.mp3
+    Sinh tên file output từ nhóm, có số thứ tự index ở đầu.
+    Ví dụ: 1.Kỵ sĩ huyết mạch_001-010.mp3
     """
     # Tách số chương từ tên file đầu và cuối
     def extract_num(fname):
@@ -241,8 +241,8 @@ def group_output_name(group: list) -> str:
         last_pad  = last
 
     if first_pad == last_pad:
-        return f"{OUTPUT_PREFIX}_{first_pad}.mp3"
-    return f"{OUTPUT_PREFIX}_{first_pad}-{last_pad}.mp3"
+        return f"{index}.{OUTPUT_PREFIX}_{first_pad}.mp3"
+    return f"{index}.{OUTPUT_PREFIX}_{first_pad}-{last_pad}.mp3"
 
 # =============================================================================
 # TERMINAL PROGRESS
@@ -329,7 +329,7 @@ def run():
     done_count = skipped = errors = 0
 
     for gi, group in enumerate(groups, 1):
-        out_name   = group_output_name(group)
+        out_name = group_output_name(group, gi)
         out_path   = os.path.join(OUTPUT_DIR, out_name)
         group_key  = out_name  # dùng tên file làm key state
 
@@ -424,7 +424,7 @@ def run():
     print(f"{'Nhóm':<4}  {'File output':<40}  {'Chương':>7}  {'Thời lượng':>12}")
     print(f"{'-'*4}  {'-'*40}  {'-'*7}  {'-'*12}")
     for gi, group in enumerate(groups, 1):
-        out_name  = group_output_name(group)
+        out_name  = group_output_name(group, gi)
         out_path  = os.path.join(OUTPUT_DIR, out_name)
         grp_dur   = sum(g[1] for g in group)
         status    = "✅" if os.path.exists(out_path) else "❌"
