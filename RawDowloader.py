@@ -37,7 +37,7 @@ END_CHAPTER   = 3000
 URL_TEMPLATE = "https://www.tvtruyen.com/dai-can-truong-sinh/chuong-{}/"
 
 # Dùng khi CRAWL_MODE = "navigate"
-URL_FIRST_CHAPTER = "https://www.xtruyen.vn/truyen/au-hoang-quat-khoi/chuong-1-thuong-ky-binh-cung-tuong-thuc-/"
+URL_FIRST_CHAPTER = "https://docln.sbs/truyen/330-boku-wa-isekai-de-fuyo-mahou-to-shoukan-mahou-wo-tenbin-ni-kakeru/c12210-chuong-1-cai-bay"
 
 # Tên file log lưu danh sách URL thu thập được (phase 1 của navigate mode)
 PREPARE_LOG_FILE = os.path.join(LOG_PATH, "RawDownloader_Prepare.log")
@@ -362,7 +362,7 @@ def step_isolate_and_rebuild(driver):
         nhưng tỉ lệ link/text thấp — nội dung truyện ít link,
         nav/quảng cáo nhiều link. Hoạt động tốt với mọi site lạ.
     """
-    driver.execute_script("""
+    driver.execute_script(r"""
         function scoreBlock(el) {
             const text = (el.innerText || '').trim();
             const textLen = text.length;
@@ -403,10 +403,74 @@ def step_isolate_and_rebuild(driver):
             return best;
         }
 
-        function findTitle() {
-            const selectors = [
-                'h1', 'h2', '.chapter-title', '.title', '.book-title'
-            ];
+        function findTitle(mainEl) {
+            // Bản trước dựa vào VỊ TRÍ heading (gần main content) vẫn có thể vớ
+            // nhầm "Bookmarks" nếu main content được nhận diện là một khối RỘNG
+            // (bao luôn cả mấy mục UI phía trên), hoặc nếu tiêu đề chương bị xé
+            // nhỏ qua nhiều <span> con (mỗi span không đủ để nhận ra là tiêu đề).
+            // Đổi hướng: tìm theo NGỮ NGHĨA — cụm "Chương <số>" — thay vì theo vị
+            // trí trong DOM. Ưu tiên cao nhất là thẻ <title> của trang vì đó luôn
+            // là 1 CHUỖI DUY NHẤT (không bị chia nhỏ qua nhiều thẻ con).
+            const CHAPTER_RE = /chương\s*\d+|chuong\s*\d+|chapter\s*\d+/i;
+            const VOLUME_RE  = /minh\s*họa|minh\s*hoa|phụ\s*lục|phu\s*luc|tập\s*\d+|tap\s*\d+/i;
+
+            const titleParts = (document.title || '').split(/\s*[-–—|]\s*/);
+
+            // Ưu tiên 1: đoạn trong <title> khớp "Chương <số>"
+            for (const part of titleParts) {
+                const t = part.trim();
+                if (t && t.length < 150 && CHAPTER_RE.test(t)) return t;
+            }
+
+            // Ưu tiên 2: quét từng phần tử "lá" (không có thẻ con) trên trang,
+            // tìm text ngắn khớp "Chương <số>" — không cần biết nó là heading
+            // hay div/span/a, miễn nằm trọn trong 1 phần tử.
+            function scanForPattern(re) {
+                const all = document.querySelectorAll('body *');
+                for (const el of all) {
+                    const tag = el.tagName;
+                    if (tag === 'SCRIPT' || tag === 'STYLE' || tag === 'NOSCRIPT') continue;
+                    if (el.children.length > 0) continue;
+                    const t = (el.innerText || el.textContent || '').trim();
+                    if (t && t.length < 150 && re.test(t)) return t;
+                }
+                return null;
+            }
+            let found = scanForPattern(CHAPTER_RE);
+            if (found) return found;
+
+            // Ưu tiên 3: khớp lỏng hơn cho trang không có chữ "Chương"
+            // (vd trang "Minh họa Tập X", "Phụ lục ...")
+            for (const part of titleParts) {
+                const t = part.trim();
+                if (t && t.length < 150 && VOLUME_RE.test(t)) return t;
+            }
+            found = scanForPattern(VOLUME_RE);
+            if (found) return found;
+
+            // Ưu tiên 4 (dự phòng cho site không dùng tiếng Việt / không có
+            // pattern trên): heading gần main content nhất trong DOM.
+            if (mainEl) {
+                const headings = Array.from(document.querySelectorAll('h1, h2, h3, h4, h5, h6'));
+                let candidate = null;
+                for (const h of headings) {
+                    if (h.compareDocumentPosition(mainEl) & Node.DOCUMENT_POSITION_FOLLOWING) {
+                        candidate = h;
+                    }
+                }
+                if (candidate) {
+                    const t = (candidate.innerText || '').trim();
+                    if (t && t.length < 200) return t;
+                }
+                const inner = mainEl.querySelector('h1, h2, h3, h4, h5, h6');
+                if (inner) {
+                    const t = (inner.innerText || '').trim();
+                    if (t && t.length < 200) return t;
+                }
+            }
+
+            // Fallback cuối cùng — selector cũ
+            const selectors = ['h1', 'h2', '.chapter-title', '.title', '.book-title'];
             for (let sel of selectors) {
                 const el = document.querySelector(sel);
                 if (el && el.innerText.length < 200) return el.innerText.trim();
@@ -415,7 +479,7 @@ def step_isolate_and_rebuild(driver):
         }
 
         const main  = findMainContent();
-        const title = findTitle();
+        const title = findTitle(main);
 
         if (main) {
             const html = main.innerHTML;
@@ -584,13 +648,33 @@ def save_pdf(driver, filename):
 # Các keyword tìm nút "Chương sau" — thêm vào nếu gặp site dùng chữ khác
 NEXT_CHAPTER_KEYWORDS = [
     "chương sau", "chương tiếp", "next chapter", "tiếp theo",
-    "trang sau", "next", "»", "→"
+    "trang sau", "next", "»", "→", ">>"
 ]
 
 
 def find_next_chapter_url(driver):
     """
-    Tìm URL chương tiếp theo. Dùng 3 chiến lược theo thứ tự:
+    Tìm URL chương tiếp theo. Dùng nhiều chiến lược theo thứ tự:
+
+    0. [MỚI] Mục lục dạng <li><a> (sidebar/dropdown chương) — dành cho site
+       mà nút "chương sau" chỉ là ICON, hoàn toàn KHÔNG có chữ/keyword để
+       so khớp (vd: docln.sbs — nút chỉ là hình mũi tên/">>" không có text).
+
+       Cách làm: nhận diện "tiền tố chương" từ URL hiện tại — tức phần URL
+       đứng trước đoạn cuối dạng "/c<số>-..." (vd với
+       ".../c12210-chuong-1-cai-bay" thì tiền tố là phần trước "/c12210-").
+       Sau đó gom mọi link CÙNG tiền tố này mà nằm trong thẻ <li> (tức nằm
+       trong mục lục dạng danh sách), giữ đúng thứ tự xuất hiện trong DOM
+       (= đúng thứ tự đọc trên docln.sbs), rồi trả về link đứng ngay SAU
+       link của trang hiện tại. Không phụ thuộc text hay class cụ thể nên
+       khá bền vững, kể cả khi hết tập này sang tập khác.
+
+    0b.[MỚI] Nhóm nút "prev / mục lục / next" dạng icon nằm cạnh nhau, dùng
+       khi trang không có mục lục <li> đầy đủ trong DOM. Tìm một khối cha
+       chứa 2-4 thẻ <a>, trong đó có đúng 1 link trỏ về đúng trang mục lục
+       truyện (URL không có phần "/c<số>") và các link còn lại là link
+       chương cùng bộ — lấy link chương CUỐI CÙNG trong khối đó (vị trí
+       bên phải, đúng quy ước prev-giữa-next) làm "chương sau".
 
     1. CSS selector trực tiếp — nhanh, chính xác cho site có class cố định
        (xtruyen: .btn.next_page, nhiều site khác: .nav-next a, .next-chap...)
@@ -598,6 +682,90 @@ def find_next_chapter_url(driver):
        <a><span>Chương tiếp</span><i class="icon"/></a> mà link.text bị lẫn ký tự icon
     3. Quét <a> theo link.text toàn bộ, lọc ký tự font icon (Unicode Private Use Area)
     """
+    # Hàm JS dùng chung cho chiến lược 0 và 0b: xác định "tiền tố chương"
+    # từ 1 URL, và kiểm tra 1 href có cùng tiền tố (cùng truyện) hay không.
+    # Viết dưới dạng string thuần (không regex động) để tránh lỗi escape
+    # khi nhúng vào Python.
+    JS_HELPERS = r"""
+        function chapterPrefix(url) {
+            const clean = url.split('?')[0].split('#')[0].replace(/\/$/, '');
+            const parts = clean.split('/');
+            if (parts.length < 2) return null;
+            const last = parts[parts.length - 1];
+            if (last.length < 2 || last[0] !== 'c' || last[1] < '0' || last[1] > '9') return null;
+            return parts.slice(0, -1).join('/');
+        }
+        function isChapterOfPrefix(href, prefix) {
+            const clean = href.split('?')[0].split('#')[0].replace(/\/$/, '');
+            if (!clean.startsWith(prefix + '/c')) return false;
+            const rest = clean.slice((prefix + '/c').length);
+            return rest.length > 0 && rest[0] >= '0' && rest[0] <= '9';
+        }
+    """
+
+    try:
+        # ---- Chiến lược 0: mục lục <li><a> ----
+        next_url = driver.execute_script(JS_HELPERS + r"""
+            const curUrl = window.location.href.split('?')[0].split('#')[0].replace(/\/$/, '');
+            const prefix = chapterPrefix(curUrl);
+            if (!prefix) return null;
+
+            const links = Array.from(document.querySelectorAll('li a[href]'))
+                .filter(a => isChapterOfPrefix(a.href, prefix));
+
+            const seen = new Set();
+            const ordered = [];
+            links.forEach(a => {
+                const href = a.href.split('?')[0].split('#')[0].replace(/\/$/, '');
+                if (!seen.has(href)) { seen.add(href); ordered.push(href); }
+            });
+
+            const idx = ordered.indexOf(curUrl);
+            if (idx !== -1 && idx + 1 < ordered.length) return ordered[idx + 1];
+            return null;
+        """)
+        if next_url and next_url != driver.current_url:
+            return next_url
+    except Exception:
+        pass
+
+    try:
+        # ---- Chiến lược 0b: nhóm icon prev / mục lục / next cạnh nhau ----
+        next_url = driver.execute_script(JS_HELPERS + r"""
+            const curUrl = window.location.href.split('?')[0].split('#')[0].replace(/\/$/, '');
+            const prefix = chapterPrefix(curUrl);
+            if (!prefix) return null;
+
+            const allLinks = Array.from(document.querySelectorAll('a[href]'));
+            const groups = new Map();
+            allLinks.forEach(a => {
+                const p = a.parentElement;
+                if (!p) return;
+                if (!groups.has(p)) groups.set(p, []);
+                groups.get(p).push(a);
+            });
+
+            for (const entry of groups.values()) {
+                if (entry.length < 2 || entry.length > 4) continue;
+                const hasRoot = entry.some(a => {
+                    const clean = a.href.split('?')[0].split('#')[0].replace(/\/$/, '');
+                    return clean === prefix;
+                });
+                const chapLinks = entry.filter(a => {
+                    const clean = a.href.split('?')[0].split('#')[0].replace(/\/$/, '');
+                    return isChapterOfPrefix(a.href, prefix) && clean !== curUrl;
+                });
+                if (hasRoot && chapLinks.length >= 1) {
+                    return chapLinks[chapLinks.length - 1].href;
+                }
+            }
+            return null;
+        """)
+        if next_url and next_url != driver.current_url:
+            return next_url
+    except Exception:
+        pass
+
     try:
         # Chiến lược 1: CSS selector phổ biến
         css_selectors = [
