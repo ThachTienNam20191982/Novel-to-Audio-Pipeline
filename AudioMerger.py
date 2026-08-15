@@ -4,44 +4,34 @@ import subprocess
 import logging
 import json
 from datetime import datetime
+import config
 
 # =============================================================================
 # CONFIG
+# Giá trị nằm trong config.py, mục "AudioMerger.py — CONFIG"
 # =============================================================================
 
-INPUT_DIR  = "Audio"       # Thư mục chứa file .mp3 từ AudioGenerator
-OUTPUT_DIR = "Merged"      # Thư mục xuất file đã merge
-LOG_DIR    = "Log"
+INPUT_DIR  = config.AUDIO_DIR         # Thư mục chứa file .mp3 từ AudioGenerator
+OUTPUT_DIR = config.AUDIO_MERGED_DIR  # Thư mục xuất file đã merge
+LOG_DIR    = config.LOG_DIR
 LOG_FILE   = os.path.join(LOG_DIR, "AudioMerger_log.log")
 
 # --- Chiến lược nhóm ---
-# Số chương tối đa trong 1 file merged (0 = không giới hạn, chỉ dùng MAX_DURATION_SECONDS)
-CHAPTERS_PER_GROUP = 100
-
-# Thời lượng tối đa (giây) của 1 file merged (0 = không giới hạn, chỉ dùng CHAPTERS_PER_GROUP)
-# Ví dụ: 3600 = 1 giờ, 5400 = 1.5 giờ, 7200 = 2 giờ
-MAX_DURATION_SECONDS = 36000
-
-# Khi CẢ HAI đều được đặt (> 0): dừng nhóm khi THỎA MÃN 1 trong 2 điều kiện
-# Khi CHỈ 1 điều kiện được đặt (> 0): chỉ dùng điều kiện đó
-# Khi CẢ HAI = 0: mỗi nhóm chứa toàn bộ file (merge tất cả thành 1)
+CHAPTERS_PER_GROUP   = config.AUDIOMERGE_CHAPTERS_PER_GROUP
+MAX_DURATION_SECONDS = config.AUDIOMERGE_MAX_DURATION_SECONDS
 
 # --- Bitrate output ---
-OUTPUT_BITRATE = "192k"    # Bitrate file merged (64k / 128k / 192k / 320k)
+OUTPUT_BITRATE = config.AUDIOMERGE_OUTPUT_BITRATE
 
 # --- Tên file output ---
-# Ví dụ: OUTPUT_PREFIX = "Truyen" → Truyen_Chuong_001-010.mp3
-OUTPUT_PREFIX = "Kỵ sĩ huyết mạch"
+OUTPUT_PREFIX = config.AUDIOMERGE_OUTPUT_PREFIX
 
 # --- Resume ---
-# True  = bỏ qua file merged đã tồn tại (an toàn khi bị kill giữa chừng)
-# False = luôn tạo lại từ đầu
-SKIP_EXISTING = True
+SKIP_EXISTING = config.AUDIOMERGE_SKIP_EXISTING
 
 # --- Verify merge ---
-# Kiểm tra tổng thời lượng sau khi merge, cho phép sai số VERIFY_TOLERANCE giây
-VERIFY_ENABLE    = True
-VERIFY_TOLERANCE = 2.0     # giây
+VERIFY_ENABLE    = config.AUDIOMERGE_VERIFY_ENABLE
+VERIFY_TOLERANCE = config.AUDIOMERGE_VERIFY_TOLERANCE
 
 # --- Tên file state (để resume khi bị kill) ---
 STATE_FILE = os.path.join(LOG_DIR, "AudioMerger_state.json")

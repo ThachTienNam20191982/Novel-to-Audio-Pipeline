@@ -1,7 +1,8 @@
 import os
 import re
+import config
 
-folder = "Raw"
+folder = config.RAW_DIR
 
 pattern = re.compile(r"^Chuong_(\d+)\.pdf$")
 

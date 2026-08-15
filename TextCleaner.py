@@ -3,20 +3,22 @@ import re
 import logging
 from datetime import datetime
 from collections import defaultdict
+import config
 
 # =========================
 # ===== CONFIG ============
 # =========================
 
-INPUT_DIR = "Translate"
-OUTPUT_DIR = "Cleaned"
-LOG_DIR = "Log"
+INPUT_DIR = config.TRANSLATE_DIR
+OUTPUT_DIR = config.CLEANED_DIR
+LOG_DIR = config.LOG_DIR
 LOG_FILE = os.path.join(LOG_DIR, "TextCleaner_log.log")
 KEYWORD_FILE = os.path.join(LOG_DIR, "TextCleaner_KeyWord.log")
 
-HEAVY_DELETE_THRESHOLD = 10  # % — điều chỉnh ngưỡng "cắt nhiều" tại đây
+# Giá trị nằm trong config.py, mục "TextCleaner.py — CONFIG"
+HEAVY_DELETE_THRESHOLD = config.TEXTCLEANER_HEAVY_DELETE_THRESHOLD
 
-ADD_CHAPTER_NUMBER = True
+ADD_CHAPTER_NUMBER = config.TEXTCLEANER_ADD_CHAPTER_NUMBER
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 os.makedirs(LOG_DIR, exist_ok=True)

@@ -1,8 +1,9 @@
 import re
 import os
+import config
 
-input_file = "Translate/Tái nhợt ký hiệu.txt"  # tên file lớn, có thể thay đổi
-output_dir = "Cleaned"
+input_file = config.TEXTSPLIT_INPUT_FILE  # tên file lớn, tự lấy theo NOVEL_NAME trong config.py
+output_dir = config.CLEANED_DIR
 
 # Tạo thư mục nếu chưa có
 os.makedirs(output_dir, exist_ok=True)

@@ -1,19 +1,22 @@
 import os
+import re
 import fitz  # PyMuPDF
 import logging
 from datetime import datetime
+import config
 
 # =============================================================================
 # CONFIG
 # =============================================================================
 
-INPUT_DIR  = "Raw"
-OUTPUT_DIR = "Translate"
-LOG_DIR    = "Log"
+INPUT_DIR  = config.RAW_DIR
+OUTPUT_DIR = config.TRANSLATE_DIR
+LOG_DIR    = config.LOG_DIR
 LOG_FILE   = os.path.join(LOG_DIR, "TextExtractor_log.log")
 
-MIN_WORD_COUNT      = 500   # file ít hơn ngưỡng này → nghi ngờ file ngắn
-ANOMALY_THRESHOLD   = 0.30  # sai số >20% so với trung bình → bất thường
+# Giá trị nằm trong config.py, mục "TextExtractor.py — CONFIG"
+MIN_WORD_COUNT      = config.TEXTEXTRACT_MIN_WORD_COUNT
+ANOMALY_THRESHOLD   = config.TEXTEXTRACT_ANOMALY_THRESHOLD
 
 # =============================================================================
 # BOOTSTRAP
@@ -58,6 +61,12 @@ def save_text(txt_path: str, content: str):
 
 def count_words(text: str) -> int:
     return len(text.split())
+
+
+def extract_chapter_number(filename: str):
+    """Trích số chương từ tên file, vd 'Chuong_7.pdf' -> 7. None nếu không tìm thấy số nào."""
+    m = re.search(r'(\d+)', filename)
+    return int(m.group(1)) if m else None
 
 # =============================================================================
 # TERMINAL REPORT
@@ -116,20 +125,51 @@ def run():
     logger.info("SESSION START  %s", session_start.strftime("%Y-%m-%d %H:%M:%S"))
     logger.info("=" * 60)
 
-    all_files = sorted(f for f in os.listdir(INPUT_DIR) if f.lower().endswith(".pdf"))
-    total     = len(all_files)
+    all_pdf_files = [f for f in os.listdir(INPUT_DIR) if f.lower().endswith(".pdf")]
+
+    # --- Trích số chương từ tên file; bỏ qua file không xác định được số ---
+    numbered_files = []  # list of (chapter_num, filename)
+    for f in all_pdf_files:
+        num = extract_chapter_number(f)
+        if num is None:
+            logger.warning("SKIP_NO_NUMBER  %s — không tìm thấy số chương trong tên file", f)
+            continue
+        numbered_files.append((num, f))
+
+    numbered_files.sort(key=lambda x: x[0])  # sắp đúng thứ tự chương, không theo alphabet
+    total = len(numbered_files)
 
     if total == 0:
-        logger.warning("Không tìm thấy file PDF trong '%s'.", INPUT_DIR)
+        logger.warning("Không tìm thấy file PDF hợp lệ trong '%s'.", INPUT_DIR)
         print("⚠  Không có file PDF nào.")
         return
+
+    # --- Tự tính số chữ số cần đệm theo số chương LỚN NHẤT đang có trong Raw ---
+    max_chapter = numbered_files[-1][0]
+    width = len(str(max_chapter))
+
+    # --- Cảnh báo nếu Translate/ đang có sẵn file đệm số KHÁC độ dài hiện tại —
+    # thường do lần chạy trước Raw/ chưa tải đủ chương nên width lúc đó nhỏ hơn ---
+    existing_txt = [f for f in os.listdir(OUTPUT_DIR) if f.lower().endswith(".txt")]
+    mismatched = []
+    for f in existing_txt:
+        m = re.search(r'_(\d+)\.txt$', f)
+        if m and len(m.group(1)) != width:
+            mismatched.append(f)
+    if mismatched:
+        logger.warning("PADDING_MISMATCH  %d file trong Translate/ đệm số khác %d chữ số hiện "
+                        "tại (vd: %s) — có thể do lần trước Raw/ chưa tải đủ chương.",
+                        len(mismatched), width, mismatched[0])
+        print(f"⚠️  {len(mismatched)} file trong Translate/ đang đệm số khác {width} chữ số "
+              f"(vd: {mismatched[0]}) — có thể do lần trước Raw/ chưa tải đủ chương.\n"
+              f"   Khuyên nên xoá thư mục Translate/ rồi chạy lại sau khi Raw/ đã đủ hết chương.\n")
 
     done = skipped = errors = 0
     results: list[dict] = []   # lưu để tính anomaly sau
 
-    for idx, file in enumerate(all_files, 1):
+    for idx, (chapter_num, file) in enumerate(numbered_files, 1):
         pdf_path = os.path.join(INPUT_DIR, file)
-        txt_name = os.path.splitext(file)[0] + ".txt"
+        txt_name = f"Chương_{chapter_num:0{width}d}.txt"
         txt_path = os.path.join(OUTPUT_DIR, txt_name)
 
         # --- Terminal: progress ---
@@ -138,7 +178,7 @@ def run():
 
         # --- Skip đã xử lý ---
         if os.path.exists(txt_path):
-            logger.info("SKIP     %s (đã tồn tại)", file)
+            logger.info("SKIP     %s (đã tồn tại: %s)", file, txt_name)
             skipped += 1
             continue
 
@@ -155,7 +195,7 @@ def run():
             save_text(txt_path, raw)
 
             elapsed = (datetime.now() - t0).total_seconds()
-            logger.info("OK       %s — %d từ  |  %.2fs", file, words, elapsed)
+            logger.info("OK       %s -> %s — %d từ  |  %.2fs", file, txt_name, words, elapsed)
             done += 1
 
             results.append({"file": txt_name, "words": words, "flag": None})

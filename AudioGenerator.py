@@ -11,6 +11,7 @@ import warnings
 import re
 import multiprocessing
 import sys
+import config
 from multiprocessing import Process, Queue, Semaphore
 
 # pip install rich
@@ -30,37 +31,37 @@ if os.name == "nt":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 # ================= CONFIG =================
-INPUT_DIR = "Cleaned"
-OUTPUT_DIR = "Audio"
-TEMP_ROOT = "temp_audio"
+# Giá trị nằm trong config.py, mục "AudioGenerator.py — CONFIG"
+INPUT_DIR = config.CLEANED_DIR
+OUTPUT_DIR = config.AUDIO_DIR
+TEMP_ROOT = config.TEMP_AUDIO_DIR
 
-VOICE = "vi-VN-HoaiMyNeural"
+VOICE = config.AUDIOGEN_VOICE
 
-CHUNK_SIZE = 1500
-SENTENCE_SPLIT_REGEX = r'(?<=[.!?…])\s+'
+CHUNK_SIZE = config.AUDIOGEN_CHUNK_SIZE
+SENTENCE_SPLIT_REGEX = config.AUDIOGEN_SENTENCE_SPLIT_REGEX
 
-MAX_RETRY = 10
-RETRY_BASE_DELAY = 1.0
-RETRY_BACKOFF = 1.5
+MAX_RETRY = config.AUDIOGEN_MAX_RETRY
+RETRY_BASE_DELAY = config.AUDIOGEN_RETRY_BASE_DELAY
+RETRY_BACKOFF = config.AUDIOGEN_RETRY_BACKOFF
 
-DELAY_BETWEEN_CHUNKS = (0.1, 0.2)
-DELAY_BETWEEN_FILES  = (0.3, 0.5)
+DELAY_BETWEEN_CHUNKS = config.AUDIOGEN_DELAY_BETWEEN_CHUNKS
+DELAY_BETWEEN_FILES  = config.AUDIOGEN_DELAY_BETWEEN_FILES
 
-TTS_CONCURRENT = 3
-MAX_WORKERS    = 5
-WORKER_STAGGER = 2.0
+TTS_CONCURRENT = config.AUDIOGEN_TTS_CONCURRENT
+MAX_WORKERS    = config.AUDIOGEN_MAX_WORKERS
+WORKER_STAGGER = config.AUDIOGEN_WORKER_STAGGER
 
-THROTTLE_KEYWORDS = ["1015", "1008", "connection", "reset", "timeout", "too many", "no audio"]
-THROTTLE_BASE_DELAY = 15
-THROTTLE_BACKOFF    = 20
+THROTTLE_KEYWORDS = config.AUDIOGEN_THROTTLE_KEYWORDS
+THROTTLE_BASE_DELAY = config.AUDIOGEN_THROTTLE_BASE_DELAY
+THROTTLE_BACKOFF    = config.AUDIOGEN_THROTTLE_BACKOFF
 
-# 0 = không giới hạn, >0 = tối đa N chunk mỗi file mp3 → Prefix_Part1.mp3, Part2...
-MAX_CHUNKS_PER_PART = 500
+MAX_CHUNKS_PER_PART = config.AUDIOGEN_MAX_CHUNKS_PER_PART
 
-SUPPORTED_EXT = (".docx", ".txt")
+SUPPORTED_EXT = config.AUDIOGEN_SUPPORTED_EXT
 
-LOG_FILE   = "Log/AudioGenerator_Log.log"
-SESSION_ID = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+LOG_FILE   = os.path.join(config.LOG_DIR, "AudioGenerator_Log.log")
+SESSION_ID = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")  # runtime — không phải setting, giữ tại đây
 
 # ================= GLOBAL (per-process) =================
 _tts_semaphore = None
@@ -432,7 +433,7 @@ def build_table(worker_states, counts, total_files):
 
 # ================= MAIN =================
 def main():
-    os.makedirs("Log", exist_ok=True)
+    os.makedirs(config.LOG_DIR, exist_ok=True)
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
     log("=" * 60)

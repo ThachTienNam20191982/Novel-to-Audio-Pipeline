@@ -1,16 +1,17 @@
 import os
 import glob
 import re
+import config
 
 # ==================================================
 # CONFIG
 # ==================================================
-INPUT_FOLDER = "Cleaned"
-OUTPUT_FOLDER = "Text_Merged"
+INPUT_FOLDER = config.CLEANED_DIR
+OUTPUT_FOLDER = config.TEXT_MERGED_DIR
 
-# 0 = Merge tất cả thành 1 file
-# >0 = Số chương mỗi file
-MERGE_SIZE = 10
+# Giá trị nằm trong config.py, mục "TextMerge.py — CONFIG"
+# 0 = Merge tất cả thành 1 file | >0 = Số chương mỗi file
+MERGE_SIZE = config.TEXTMERGE_MERGE_SIZE
 # ==================================================
 
 os.makedirs(OUTPUT_FOLDER, exist_ok=True)

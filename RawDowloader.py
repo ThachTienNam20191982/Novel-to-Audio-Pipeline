@@ -8,100 +8,55 @@ from queue import Queue
 from urllib.parse import urlparse
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
+import config
 
 
 # ==============================================================================
 # ===== CONFIG =================================================================
+# Toàn bộ tham số cấu hình của file này nằm trong config.py, mục
+# "RawDowloader.py — CONFIG". Sửa giá trị ở đó khi cần, không sửa ở đây.
 # ==============================================================================
 
-SAVE_PATH      = "Raw"
-LOG_PATH       = "Log"
+SAVE_PATH      = config.RAW_DIR
+LOG_PATH       = config.LOG_DIR
 LOG_FILE_NAME  = "RawDownloader_log.log"
 LOG_FILE       = os.path.join(LOG_PATH, LOG_FILE_NAME)
 
-# ------------------------------------------------------------------------------
-# ===== CRAWL MODE =============================================================
-# CRAWL_MODE = "index"    : dùng URL_TEMPLATE + START/END_CHAPTER như cũ.
-# CRAWL_MODE = "navigate" : bắt đầu từ URL_FIRST_CHAPTER, tự tìm nút "Chương sau"
-#                           để lần lượt thu thập URL từng chương, sau đó download.
-# ------------------------------------------------------------------------------
-CRAWL_MODE = "navigate"
-
-# Dùng khi CRAWL_MODE = "index": sinh URL theo template.
-# Dùng khi CRAWL_MODE = "navigate": giới hạn số chương thu thập (START/END_CHAPTER).
-#   START_CHAPTER : bỏ qua N chương đầu, bắt đầu lưu từ chương thứ N.
-#   END_CHAPTER   : dừng thu thập khi đạt đến chương này (kể cả chưa hết truyện).
-#                   Đặt END_CHAPTER = 999999 nếu muốn lấy hết đến chương cuối.
-START_CHAPTER = 1
-END_CHAPTER   = 3000
-URL_TEMPLATE = "https://www.tvtruyen.com/dai-can-truong-sinh/chuong-{}/"
-
-# Dùng khi CRAWL_MODE = "navigate"
-URL_FIRST_CHAPTER = "https://docln.sbs/truyen/330-boku-wa-isekai-de-fuyo-mahou-to-shoukan-mahou-wo-tenbin-ni-kakeru/c12210-chuong-1-cai-bay"
+CRAWL_MODE        = config.RAWDL_CRAWL_MODE
+START_CHAPTER     = config.RAWDL_START_CHAPTER
+END_CHAPTER       = config.RAWDL_END_CHAPTER
+URL_TEMPLATE      = config.RAWDL_URL_TEMPLATE
+URL_FIRST_CHAPTER = config.RAWDL_URL_FIRST_CHAPTER
 
 # Tên file log lưu danh sách URL thu thập được (phase 1 của navigate mode)
 PREPARE_LOG_FILE = os.path.join(LOG_PATH, "RawDownloader_Prepare.log")
 
-WORKER_COUNT = 1
+WORKER_COUNT = config.RAWDL_WORKER_COUNT
 
-LOAD_WAIT_TIME  = 4    # giây chờ sau khi load trang
-SCROLL_WAIT_TIME = 1.5  # giây chờ giữa mỗi lần scroll
-CHAPTER_DELAY   = 2    # giây chờ giữa các chapter (chỉ dùng ở single-thread)
+LOAD_WAIT_TIME   = config.RAWDL_LOAD_WAIT_TIME
+SCROLL_WAIT_TIME = config.RAWDL_SCROLL_WAIT_TIME
+CHAPTER_DELAY    = config.RAWDL_CHAPTER_DELAY
 
-MAX_RETRY    = 3
-RETRY_DELAY  = 3
-
-# ------------------------------------------------------------------------------
-# ===== AD-REMOVAL CONFIG ======================================================
-# Bật/tắt từng bước xử lý quảng cáo độc lập.
-#
-# Thứ tự thực thi thực tế (xem run_ad_removal):
-#   ADV_ISOLATE_REBUILD chạy ĐẦU TIÊN nếu bật — đọc DOM gốc rồi rebuild sạch,
-#   sau đó các bước còn lại chạy tiếp để dọn nốt phần sót.
-#   Nếu ADV_ISOLATE_REBUILD = False, các bước còn lại vẫn hoạt động độc lập
-#   trực tiếp trên DOM gốc của trang.
-#
-# Khuyến nghị: chỉ bật ADV_ISOLATE_REBUILD là đủ cho hầu hết site.
-# Nếu sau khi rebuild vẫn còn sót quảng cáo, bật thêm các bước bên dưới.
-# Nếu bật hết mà vẫn mất nội dung, thử tắt ADV_REMOVE_OVERLAYS trước.
-# ------------------------------------------------------------------------------
-
-# Chạy ĐẦU TIÊN — cô lập nội dung chính, rebuild lại toàn bộ DOM sạch.
-# Hiệu quả nhất. Nếu tắt, các bước dưới vẫn hoạt động nhưng kém triệt để hơn.
-ADV_ISOLATE_REBUILD     = True
-
-# Inject CSS ẩn element theo class/id — chỉ ẩn, không xóa DOM.
-# Lưu ý: khi in PDF, Chrome đôi khi vẫn render element bị display:none,
-# nên bước này ít hiệu quả hơn các bước xóa DOM thật sự bên dưới.
-ADV_HIDE_CSS            = True
-
-# Xóa <img> banner tỉ lệ ngang, link ad-domain, thẻ <ins> — xóa DOM thật sự.
-ADV_REMOVE_INLINE       = True
-
-# Xóa fixed/sticky element + iframe — xóa DOM thật sự.
-# Nếu KHÔNG dùng ADV_ISOLATE_REBUILD, bước này có thể xóa mất header/nội dung thật.
-ADV_REMOVE_OVERLAYS     = True
-
-# Xóa noise đặc thù domain (footer, sidebar riêng của từng site).
-ADV_REMOVE_DOMAIN_NOISE = True
-
-# Thời gian chờ thêm TRƯỚC khi chạy ad-removal (để quảng cáo động kịp load)
-ADV_EXTRA_WAIT_BEFORE  = 2   # giây; đặt 0 để bỏ qua
-# Thời gian chờ thêm SAU khi chạy ad-removal (để DOM ổn định)
-ADV_EXTRA_WAIT_AFTER   = 1   # giây; đặt 0 để bỏ qua
+MAX_RETRY   = config.RAWDL_MAX_RETRY
+RETRY_DELAY = config.RAWDL_RETRY_DELAY
 
 # ------------------------------------------------------------------------------
-# ===== PDF POST-PROCESSING CONFIG (chỉ dùng cho xalosach hoặc bật thủ công) ==
+# ===== AD-REMOVAL CONFIG (giá trị nằm trong config.py) ========================
 # ------------------------------------------------------------------------------
+ADV_ISOLATE_REBUILD     = config.RAWDL_ADV_ISOLATE_REBUILD
+ADV_HIDE_CSS            = config.RAWDL_ADV_HIDE_CSS
+ADV_REMOVE_INLINE       = config.RAWDL_ADV_REMOVE_INLINE
+ADV_REMOVE_OVERLAYS     = config.RAWDL_ADV_REMOVE_OVERLAYS
+ADV_REMOVE_DOMAIN_NOISE = config.RAWDL_ADV_REMOVE_DOMAIN_NOISE
+ADV_EXTRA_WAIT_BEFORE   = config.RAWDL_ADV_EXTRA_WAIT_BEFORE
+ADV_EXTRA_WAIT_AFTER    = config.RAWDL_ADV_EXTRA_WAIT_AFTER
 
-# Bật crop PDF sau khi tải (cắt đầu trang 1, xóa N trang cuối)
-PDF_SMART_CROP = False
-
-# Số pixel cắt ở đầu trang đầu tiên (dùng để bỏ header ảnh)
-CROP_TOP_FIRST_PAGE  = 250
-
-# Số trang xóa ở cuối PDF (thường là trang quảng cáo/mục lục của site)
-REMOVE_LAST_N_PAGES  = 6
+# ------------------------------------------------------------------------------
+# ===== PDF POST-PROCESSING CONFIG (giá trị nằm trong config.py) ==============
+# ------------------------------------------------------------------------------
+PDF_SMART_CROP      = config.RAWDL_PDF_SMART_CROP
+CROP_TOP_FIRST_PAGE = config.RAWDL_CROP_TOP_FIRST_PAGE
+REMOVE_LAST_N_PAGES = config.RAWDL_REMOVE_LAST_N_PAGES
 
 
 # ==============================================================================
