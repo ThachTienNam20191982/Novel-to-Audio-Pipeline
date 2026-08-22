@@ -11,7 +11,7 @@ import os
 # ------------------------------------------------------------------------------
 # ⭐ CHỈ CẦN SỬA DÒNG NÀY MỖI KHI CHUYỂN TRUYỆN ⭐
 # ------------------------------------------------------------------------------
-NOVEL_NAME = "Quật Khởi Chi Đệ Tam Đế Quốc"
+NOVEL_NAME = 'Chàng Rể Ma Giới'
 
 DATA_ROOT = "Data"
 BASE_DIR = os.path.join(DATA_ROOT, NOVEL_NAME)
@@ -37,18 +37,18 @@ for _dir in (RAW_DIR, TRANSLATE_DIR, CLEANED_DIR, TEXT_MERGED_DIR,
 # CRAWL_MODE = "index"    : dùng URL_TEMPLATE + START/END_CHAPTER
 # CRAWL_MODE = "navigate" : bắt đầu từ URL_FIRST_CHAPTER, tự tìm nút "Chương sau"
 #                           để lần lượt thu thập URL từng chương, sau đó download.
-RAWDL_CRAWL_MODE = "navigate"
+RAWDL_CRAWL_MODE = 'index'
 
 # Dùng khi CRAWL_MODE = "index": sinh URL theo template.
 # Dùng khi CRAWL_MODE = "navigate": giới hạn số chương thu thập.
 #   START_CHAPTER : bỏ qua N chương đầu, bắt đầu lưu từ chương thứ N.
 #   END_CHAPTER   : dừng thu thập khi đạt đến chương này (999999 = lấy hết).
 RAWDL_START_CHAPTER = 1
-RAWDL_END_CHAPTER   = 10000
-RAWDL_URL_TEMPLATE = "https://thungtruyen.com/truyen/khoai-lac-he-thong/chuong-{}/"
+RAWDL_END_CHAPTER = 1275
+RAWDL_URL_TEMPLATE = 'https://truyenmoiss.org/chang-re-ma-gioi/chuong-{}/'
 
 # Dùng khi CRAWL_MODE = "navigate"
-RAWDL_URL_FIRST_CHAPTER = "https://metruyenchuvn.org/quat-khoi-chi-de-tam-de-quoc/chuong-0-EK8G1vTPiwMD"
+RAWDL_URL_FIRST_CHAPTER = 'https://truyenmoiss.org/chang-re-ma-gioi/chuong-1'
 
 RAWDL_WORKER_COUNT = 1
 

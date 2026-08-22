@@ -431,6 +431,25 @@ def build_table(worker_states, counts, total_files):
 
     return table
 
+
+def print_gui_progress(worker_states, counts, total_files):
+    """Xuất progress dạng dòng dữ liệu để GUI tự vẽ progress bar."""
+    for wid in range(MAX_WORKERS):
+        state = worker_states.get(wid, {})
+        phase = state.get("phase", "idle")
+        # Giao thuc progress phai ASCII-only de khong phu thuoc encoding cp1252/cp437
+        # cua console Windows khi stdout dang bi GUI redirect vao PIPE.
+        prefix = str(state.get("prefix", "-"))
+        prefix = prefix.replace("|", "/").encode("ascii", "backslashreplace").decode("ascii")
+        current = int(state.get("current", 0))
+        total = max(int(state.get("total", 1)), 1)
+        print(
+            f"@@AUDIOGEN_PROGRESS@@|{wid}|{prefix}|{phase}|{current}|{total}|"
+            f"{counts.get('done', 0)}|{counts.get('fail', 0)}|{counts.get('skip', 0)}|{total_files}",
+            flush=True,
+        )
+
+
 # ================= MAIN =================
 def main():
     os.makedirs(config.LOG_DIR, exist_ok=True)
@@ -466,14 +485,24 @@ def main():
         p.start()
         procs.append(p)
 
-    # Rich Live UI ở main process
-    with Live(build_table(worker_states, counts, total_files),
-              refresh_per_second=4, screen=False) as live:
+    # Chạy trực tiếp trong CMD -> Rich Live.
+    # Chạy từ gui.py -> stdout là PIPE, nên gửi snapshot progress cho GUI.
+    use_rich = bool(sys.stdout.isatty())
+    live_ctx = Live(
+        build_table(worker_states, counts, total_files),
+        refresh_per_second=4,
+        screen=False,
+    ) if use_rich else None
 
-        active = MAX_WORKERS
+    active = MAX_WORKERS
+    last_gui_snapshot = None
 
+    if live_ctx is not None:
+        live_ctx.__enter__()
+
+    try:
         while active > 0:
-            # Drain queue
+            changed = False
             while True:
                 try:
                     msg = status_q.get(timeout=0.25)
@@ -483,29 +512,28 @@ def main():
                 kind = msg[0]
 
                 if kind == "progress":
-                    # ("progress", worker_id, prefix, current, total)
                     _, wid, prefix, current, total = msg
                     worker_states[wid].update({
-                        "phase":   "generate",
-                        "prefix":  prefix,
+                        "phase": "generate",
+                        "prefix": prefix,
                         "current": current,
-                        "total":   total,
+                        "total": total,
                     })
+                    changed = True
 
                 elif kind == "state":
-                    # ("state", worker_id, phase, prefix, current, total)
                     _, wid, phase, prefix, current, total = msg
                     worker_states[wid].update({
-                        "phase":   phase,
-                        "prefix":  prefix,
+                        "phase": phase,
+                        "prefix": prefix,
                         "current": current,
-                        "total":   total,
+                        "total": total,
                     })
                     if phase == "idle":
                         active -= 1
+                    changed = True
 
                 elif kind == "done":
-                    # ("done", worker_id, prefix, "ok"|"fail"|"skip")
                     _, wid, prefix, result = msg
                     if result == "ok":
                         counts["done"] += 1
@@ -513,20 +541,42 @@ def main():
                         counts["fail"] += 1
                     elif result == "skip":
                         counts["skip"] += 1
+                    changed = True
 
                 elif kind == "fail_chunk":
-                    # ("fail_chunk", worker_id, prefix, chunk_id)
                     _, wid, prefix, chunk_id = msg
                     worker_states[wid]["phase"] = "fail"
+                    changed = True
 
-            live.update(build_table(worker_states, counts, total_files))
+            if use_rich:
+                live_ctx.update(build_table(worker_states, counts, total_files))
+            elif changed:
+                snapshot = tuple(
+                    (
+                        wid,
+                        worker_states[wid].get("phase", "idle"),
+                        worker_states[wid].get("prefix", "—"),
+                        worker_states[wid].get("current", 0),
+                        worker_states[wid].get("total", 1),
+                    )
+                    for wid in range(MAX_WORKERS)
+                ) + (counts["done"], counts["fail"], counts["skip"])
+                if snapshot != last_gui_snapshot:
+                    print_gui_progress(worker_states, counts, total_files)
+                    last_gui_snapshot = snapshot
+    finally:
+        if live_ctx is not None:
+            live_ctx.__exit__(None, None, None)
 
     for p in procs:
         p.join()
 
     log("🎉 SESSION END")
     log("=" * 60)
-    print(f"\n🎉 ALL DONE — ✅ {counts['done']}  ❌ {counts['fail']}  ⏭ {counts['skip']}")
+    if use_rich:
+        print(f"\n🎉 ALL DONE — ✅ {counts['done']}  ❌ {counts['fail']}  ⏭ {counts['skip']}")
+    else:
+        print(f"\nALL DONE - done={counts['done']} fail={counts['fail']} skip={counts['skip']}", flush=True)
 
 if __name__ == "__main__":
     main()
