@@ -133,7 +133,7 @@ FIELD_SPECS = [
     ("AUDIOMERGE_OUTPUT_BITRATE", "Bitrate file mp3 gộp", "dropdown_strict", ["64k", "128k", "192k", "320k"], "simple"),
     ("AUDIOMERGE_SKIP_EXISTING", "Bỏ qua file đã gộp (an toàn khi bị kill giữa chừng)", "checkbox", None, "simple"),
     ("AUDIOMERGE_VERIFY_ENABLE", "Kiểm tra thời lượng sau khi gộp", "checkbox", None, "simple"),
-    ("AUDIOMERGE_OUTPUT_PREFIX", "Tiền tố tên file mp3 gộp", "entry", None, "advanced"),
+    # ("AUDIOMERGE_OUTPUT_PREFIX", "Tiền tố tên file mp3 gộp", "entry", None, "advanced"),
     ("AUDIOMERGE_CHAPTERS_PER_GROUP", "Số chương tối đa mỗi file gộp (0 = không giới hạn)", "entry", None, "advanced"),
     ("AUDIOMERGE_MAX_DURATION_SECONDS", "Thời lượng tối đa mỗi file gộp (giây, 0=không giới hạn)", "entry", None, "advanced"),
     ("AUDIOMERGE_VERIFY_TOLERANCE", "Sai số cho phép khi verify (giây)", "entry", None, "advanced"),
