@@ -2,10 +2,13 @@
 gui.py — Bảng điều khiển cho toàn bộ pipeline Novel-to-Audio.
 
 Chạy:  python gui.py
-Yêu cầu: file này nằm CÙNG thư mục với config.py và 9 file script
-         (RawDowloader.py, TextExtractor.py, TextCheck.py, TextCleaner.py,
-          TitleDelete.py, TextSplit.py, TextMerge.py, AudioGenerator.py,
-          AudioMerger.py).
+       (hoặc double-click gui.exe nếu đã đóng gói — xem build_exe.bat)
+Yêu cầu: file này (hoặc gui.exe) nằm CÙNG thư mục với config.py và 9 file
+         script (RawDowloader.py, TextExtractor.py, TextCheck.py,
+         TextCleaner.py, TitleDelete.py, TextSplit.py, TextMerge.py,
+         AudioGenerator.py, AudioMerger.py). Vẫn cần cài Python thật (kèm đủ
+         fitz/edge_tts/selenium/rich/docx2txt...) trên máy để chạy 9 script
+         đó dù gui.py đã được đóng gói thành .exe hay chưa.
 
 Tab "⚙️ Config" đọc/ghi trực tiếp config.py (có backup timestamp trước khi
 ghi đè). Mỗi tab script còn lại chạy file .py tương ứng như 1 tiến trình con
@@ -31,11 +34,25 @@ from tkinter import ttk, messagebox, simpledialog
 # =============================================================================
 # ===== ĐƯỜNG DẪN GỐC ==========================================================
 # =============================================================================
-# Luôn tính đường dẫn tương đối theo đúng thư mục chứa gui.py, bất kể chương
-# trình được khởi chạy từ đâu (double-click, shortcut, terminal ở thư mục khác...)
-
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+# Luôn tính đường dẫn tương đối theo đúng thư mục chứa gui.py/gui.exe, bất kể
+# chương trình được khởi chạy từ đâu (double-click, shortcut, terminal ở thư
+# mục khác...).
+#
+# Khi đóng gói thành .exe (PyInstaller): __file__ trỏ vào thư mục giải nén TẠM
+# (sys._MEIPASS), KHÔNG phải nơi gui.exe thực sự nằm — phải dùng sys.executable
+# thay thế. sys.frozen là cờ chuẩn PyInstaller đặt = True khi chạy dạng đóng gói.
+if getattr(sys, "frozen", False):
+    SCRIPT_DIR = os.path.dirname(os.path.abspath(sys.executable))
+else:
+    SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 os.chdir(SCRIPT_DIR)
+
+# Khi chạy "python gui.py" bình thường, Python tự thêm thư mục chứa gui.py vào
+# sys.path nên "import config" hoạt động sẵn. Khi đóng gói .exe thì KHÔNG tự
+# thêm — phải chèn thủ công để import config.py (nằm ngoài, không bundle vào
+# exe) vẫn tìm thấy được.
+if SCRIPT_DIR not in sys.path:
+    sys.path.insert(0, SCRIPT_DIR)
 
 CONFIG_PATH = os.path.join(SCRIPT_DIR, "config.py")
 BACKUP_DIR = os.path.join(SCRIPT_DIR, "config_backup")
@@ -52,6 +69,28 @@ except Exception as exc:
     )
     sys.exit(1)
 
+
+def _find_python_executable():
+    """Đường dẫn python.exe dùng để chạy 9 script con.
+
+    Chạy dạng "python gui.py" bình thường: sys.executable CHÍNH LÀ python.exe
+    cần dùng.
+    Chạy dạng gui.exe đã đóng gói (PyInstaller): sys.executable trỏ vào chính
+    gui.exe (không tự chạy được script .py khác), nên phải dò python.exe cài
+    sẵn trên máy qua PATH — pipeline vẫn cần Python thật (có đủ fitz, edge_tts,
+    selenium, rich, docx2txt...) để chạy 9 script kia, gui.exe chỉ đóng vai
+    launcher cho phần giao diện.
+    """
+    if not getattr(sys, "frozen", False):
+        return sys.executable
+    for name in ("python.exe", "py.exe", "python3.exe", "python"):
+        found = shutil.which(name)
+        if found:
+            return found
+    return None
+
+
+PYTHON_EXE = _find_python_executable()
 
 ADD_NEW_SENTINEL = "+ Thêm truyện mới..."
 INVALID_FOLDER_CHARS = set('\\/:*?"<>|')
@@ -589,17 +628,38 @@ class ScriptTab(ttk.Frame):
             messagebox.showerror("Không tìm thấy file", f"Không thấy {self.script_filename} trong:\n{SCRIPT_DIR}", parent=self)
             return
 
+        if not PYTHON_EXE:
+            messagebox.showerror(
+                "Không tìm thấy Python",
+                "Không dò được python.exe/py.exe trên máy để chạy script này.\n\n"
+                "Pipeline vẫn cần cài Python thật (kèm đủ thư viện: fitz, edge_tts,\n"
+                "selenium, rich, docx2txt...) và có trong PATH — gui.exe chỉ là\n"
+                "giao diện điều khiển, không tự chạy được các script .py.",
+                parent=self,
+            )
+            return
+
         self._append_log(f"\n{'=' * 70}\n▶ BẮT ĐẦU  {self.script_filename}   —   {datetime.now():%Y-%m-%d %H:%M:%S}\n{'=' * 70}\n")
 
         popen_kwargs = {}
         if platform.system() == "Windows":
-            popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+            # CREATE_NEW_PROCESS_GROUP: để Stop dùng taskkill /T diệt được cả cây
+            # tiến trình con (chromedriver, ffmpeg, worker...).
+            # CREATE_NO_WINDOW: không cho hiện cửa sổ cmd đen cho tiến trình con —
+            # quan trọng khi gui đã đóng gói --windowed (không có console riêng).
+            popen_kwargs["creationflags"] = (
+                subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
+            )
         else:
             popen_kwargs["start_new_session"] = True
 
+        env = os.environ.copy()
+        env["PYTHONIOENCODING"] = "utf-8"
+        env["PYTHONUTF8"] = "1"
+
         try:
             self.proc = subprocess.Popen(
-                [sys.executable, "-u", self.script_filename],
+                [PYTHON_EXE, "-u", self.script_filename],
                 cwd=SCRIPT_DIR,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
@@ -607,6 +667,7 @@ class ScriptTab(ttk.Frame):
                 encoding="utf-8",
                 errors="replace",
                 bufsize=1,
+                env=env,
                 **popen_kwargs,
             )
         except Exception as exc:
@@ -616,6 +677,7 @@ class ScriptTab(ttk.Frame):
         self.start_btn.config(state="disabled")
         self.stop_btn.config(state="normal")
         self.status_var.set("● Đang chạy...")
+
 
         self.reader_thread = threading.Thread(target=self._read_output, daemon=True)
         self.reader_thread.start()
