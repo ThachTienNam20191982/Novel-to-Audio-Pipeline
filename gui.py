@@ -19,6 +19,7 @@ và có thể Start/Stop độc lập.
 import os
 import re
 import sys
+import json
 import queue
 import shutil
 import signal
@@ -274,6 +275,174 @@ def list_existing_novels():
 
 
 # =============================================================================
+# ===== CONFIG RIÊNG THEO TỪNG TRUYỆN ==========================================
+# =============================================================================
+# config.py chỉ có 1 bộ giá trị "đang active" cho 9 script đọc. Để mỗi truyện
+# nhớ được cấu hình riêng của nó (URL, số chương, giọng đọc...), GUI lưu thêm
+# 1 file JSON trong Log/ của từng truyện — KHÔNG phải nơi 9 script đọc, chỉ để
+# GUI tự nhớ và nạp lại đúng bộ giá trị mỗi khi chọn lại truyện đó.
+
+def get_novel_config_path(novel_name):
+    return os.path.join(SCRIPT_DIR, config.DATA_ROOT, novel_name, "Log", "pipeline_config.json")
+
+
+def load_novel_config(novel_name):
+    """Đọc config riêng đã lưu cho 1 truyện. None nếu truyện đó chưa từng
+    được Lưu qua tính năng này (truyện mới, hoặc truyện có từ trước khi có
+    tính năng này)."""
+    path = get_novel_config_path(novel_name)
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def save_novel_config(novel_name, values):
+    path = get_novel_config_path(novel_name)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(values, f, ensure_ascii=False, indent=2, sort_keys=True)
+
+
+# =============================================================================
+# ===== ĐỌC / GHI TextCleaner_KeyWord.log ======================================
+# =============================================================================
+# Mirror đúng format mà TextCleaner.py tự đọc/ghi (load_keywords /
+# rewrite_keyword_file) để 2 bên luôn tương thích — dù TextCleaner.py hay GUI
+# ghi file này lần cuối, lần đọc sau (ở bên kia) vẫn hiểu đúng.
+
+KEYWORD_FILE_HEADER = """\
+# ============================================================
+# TextCleaner_KeyWord.log — Cấu hình keyword cho TextCleaner.py
+# ============================================================
+#
+# CÚ PHÁP
+#   - Dòng bắt đầu bằng # là comment, bị bỏ qua hoàn toàn
+#   - Mỗi section bắt đầu bằng [TÊN_SECTION] trên một dòng riêng
+#   - Keyword không phân biệt hoa/thường
+#
+# CÁC SECTION & CÁCH DÙNG
+#   [DELETE]          Xóa dòng chứa keyword (substring match)
+#                     → Thêm: quảng cáo, tên website, navigation lặp lại
+#
+#   [KEEP]            Bảo vệ dòng, ưu tiên hơn DELETE (substring match)
+#                     → Thêm: từ trùng DELETE nhưng có trong nội dung thật
+#
+#   [UI_JUNK_WORDS]   Xóa dòng khớp CHÍNH XÁC từ/cụm (exact match)
+#                     → Thêm: nút bấm 1-2 từ (Gửi, Hủy...), nhãn UI ngắn
+#                     → KHÔNG dùng cho chuỗi dài, hãy dùng [DELETE]
+#
+#   [UI_JUNK_NUMBERS] Bật/tắt xóa dòng chỉ chứa số nguyên đơn
+#                     → enabled (mặc định) hoặc disabled
+#                     → disabled khi truyện dùng số đơn làm đánh dấu phân cảnh
+#
+#   [SUSPECTED]       Tự động cập nhật sau mỗi lần chạy
+#                     → Xem qua, chuyển sang [DELETE] hoặc [KEEP] thủ công
+# ============================================================
+
+"""
+
+_KEYWORD_SECTION_MARKERS = {
+    "[DELETE]": "delete",
+    "[KEEP]": "keep",
+    "[UI_JUNK_WORDS]": "ui_junk_words",
+    "[UI_JUNK_NUMBERS]": "ui_junk_numbers",
+    "[SUSPECTED]": "suspected",
+}
+
+_DEFAULT_UI_JUNK_WORDS = ["gửi", "hủy", "sửa", "xóa", "đọc",
+                          "cũ nhất", "mới nhất", "yêu thích", "-", "–", "—"]
+
+
+def get_keyword_file_path():
+    """Đường dẫn TextCleaner_KeyWord.log theo đúng LOG_DIR của truyện hiện tại."""
+    return os.path.join(config.LOG_DIR, "TextCleaner_KeyWord.log")
+
+
+def read_keyword_sections():
+    """Đọc TextCleaner_KeyWord.log hiện có. Trả về (sections, ui_junk_numbers)
+    — sections là dict 4 list (delete/keep/ui_junk_words/suspected), GIỮ
+    NGUYÊN chữ hoa-thường và thứ tự như trong file (không chuẩn hoá) để hiển
+    thị đúng những gì đang có. Nếu file chưa tồn tại (truyện mới, TextCleaner
+    chưa chạy lần nào), trả về mặc định giống hệt TextCleaner.py tự tạo."""
+    path = get_keyword_file_path()
+    sections = {"delete": [], "keep": [], "ui_junk_words": [], "suspected": []}
+    ui_junk_numbers = True
+
+    if not os.path.exists(path):
+        sections["ui_junk_words"] = list(_DEFAULT_UI_JUNK_WORDS)
+        return sections, ui_junk_numbers
+
+    section = None
+    with open(path, "r", encoding="utf-8") as f:
+        for raw_line in f:
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line in _KEYWORD_SECTION_MARKERS:
+                section = _KEYWORD_SECTION_MARKERS[line]
+                continue
+            if section == "ui_junk_numbers":
+                ui_junk_numbers = (line.lower() != "disabled")
+            elif section in sections:
+                sections[section].append(line)
+
+    return sections, ui_junk_numbers
+
+
+def _dedup_preserve_order(lines, case_insensitive=True):
+    seen = set()
+    out = []
+    for ln in lines:
+        key = ln.lower() if case_insensitive else ln
+        if ln and key not in seen:
+            seen.add(key)
+            out.append(ln)
+    return out
+
+
+def write_keyword_sections(delete_lines, keep_lines, ui_junk_words_lines, ui_junk_numbers, suspected_lines):
+    """Ghi lại TextCleaner_KeyWord.log theo đúng format TextCleaner.py dùng —
+    backup timestamp trước khi ghi đè, giống cơ chế của config.py."""
+    path = get_keyword_file_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+
+    if os.path.exists(path):
+        os.makedirs(BACKUP_DIR, exist_ok=True)
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        shutil.copy2(path, os.path.join(BACKUP_DIR, f"TextCleaner_KeyWord_{ts}.log.bak"))
+
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(KEYWORD_FILE_HEADER)
+
+        f.write("[DELETE]\n")
+        for k in _dedup_preserve_order(delete_lines):
+            f.write(k + "\n")
+        f.write("\n")
+
+        f.write("[KEEP]\n")
+        for k in _dedup_preserve_order(keep_lines):
+            f.write(k + "\n")
+        f.write("\n")
+
+        f.write("[UI_JUNK_WORDS]\n")
+        for k in _dedup_preserve_order(ui_junk_words_lines):
+            f.write(k + "\n")
+        f.write("\n")
+
+        f.write("[UI_JUNK_NUMBERS]\n")
+        f.write("enabled\n" if ui_junk_numbers else "disabled\n")
+        f.write("\n")
+
+        f.write("[SUSPECTED]\n")
+        for k in _dedup_preserve_order(suspected_lines, case_insensitive=False):
+            f.write(k + "\n")
+
+
+# =============================================================================
 # ===== KHUNG CUỘN DÙNG CHUNG ==================================================
 # =============================================================================
 
@@ -426,42 +595,86 @@ class ConfigTab(ttk.Frame):
         self.novel_var.set(current)
 
     def _on_novel_selected(self, _event):
-        if self.novel_var.get() != ADD_NEW_SENTINEL:
+        selected = self.novel_var.get()
+
+        if selected == ADD_NEW_SENTINEL:
+            current = getattr(config, "NOVEL_NAME", "")
+            name = simpledialog.askstring("Thêm truyện mới", "Tên truyện mới:", parent=self)
+            if name:
+                name = name.strip()
+            if not name:
+                self.novel_var.set(current)
+                return
+            bad = INVALID_FOLDER_CHARS & set(name)
+            if bad:
+                messagebox.showerror("Tên không hợp lệ", f"Tên truyện không được chứa: {' '.join(sorted(bad))}", parent=self)
+                self.novel_var.set(current)
+                return
+            values = [v for v in self.novel_combo["values"] if v != ADD_NEW_SENTINEL]
+            if name not in values:
+                values.append(name)
+            values.append(ADD_NEW_SENTINEL)
+            self.novel_combo["values"] = values
+            self.novel_var.set(name)
+            # Truyện mới -> KHÔNG tải gì, giữ nguyên các trường đang hiển thị
+            # làm mẫu tạm thời. Bấm Lưu sẽ tạo config riêng cho truyện này.
+            self.save_status_var.set(f"📄 Truyện mới — đang dùng tạm cấu hình hiện có, bấm Lưu để tạo riêng cho \"{name}\"")
             return
-        current = getattr(config, "NOVEL_NAME", "")
-        name = simpledialog.askstring("Thêm truyện mới", "Tên truyện mới:", parent=self)
-        if name:
-            name = name.strip()
-        if not name:
-            self.novel_var.set(current)
+
+        # Truyện đã có sẵn trong danh sách -> tải config riêng của truyện đó
+        # (nếu đã từng Lưu qua tính năng này).
+        self._load_values_for_novel(selected)
+
+    def _apply_value_to_widget(self, varname, value):
+        widget_info = self.field_widgets.get(varname)
+        if not widget_info:
             return
-        bad = INVALID_FOLDER_CHARS & set(name)
-        if bad:
-            messagebox.showerror("Tên không hợp lệ", f"Tên truyện không được chứa: {' '.join(sorted(bad))}", parent=self)
-            self.novel_var.set(current)
+        kind = widget_info["kind"]
+        if kind == "checkbox":
+            widget_info["var"].set(bool(value))
+        elif kind in ("dropdown_strict", "dropdown_editable", "entry"):
+            widget_info["var"].set("" if value is None else str(value))
+        elif kind == "multiline_list":
+            tw = widget_info["text_widget"]
+            tw.delete("1.0", "end")
+            tw.insert("1.0", "\n".join(str(v) for v in (value or [])))
+        elif kind in ("tuple_floats", "tuple_strs"):
+            widget_info["var"].set(", ".join(str(v) for v in (value or ())))
+
+    def _load_values_for_novel(self, novel_name):
+        """Chọn 1 truyện khác trong dropdown -> nạp config riêng đã lưu của
+        truyện đó vào form. Nếu truyện đó chưa từng được Lưu qua tính năng
+        này (truyện có từ trước, hoặc chưa Lưu lần nào), GIỮ NGUYÊN các
+        trường đang hiển thị — coi như dùng tạm cấu hình hiện có."""
+        novel_config = load_novel_config(novel_name)
+        if novel_config is None:
+            self.save_status_var.set(f"📄 \"{novel_name}\" chưa có config riêng — đang dùng tạm cấu hình hiện có")
             return
-        values = [v for v in self.novel_combo["values"] if v != ADD_NEW_SENTINEL]
-        if name not in values:
-            values.append(name)
-        values.append(ADD_NEW_SENTINEL)
-        self.novel_combo["values"] = values
-        self.novel_var.set(name)
+        for varname in self.field_widgets:
+            if varname in novel_config:
+                self._apply_value_to_widget(varname, novel_config[varname])
+        self.save_status_var.set(f"📂 Đã tải config riêng của \"{novel_name}\"")
 
     def _load_values(self):
         self._refresh_novel_list()
-        for varname, widget_info in self.field_widgets.items():
-            value = getattr(config, varname, None)
-            kind = widget_info["kind"]
-            if kind == "checkbox":
-                widget_info["var"].set(bool(value))
-            elif kind in ("dropdown_strict", "dropdown_editable", "entry"):
-                widget_info["var"].set("" if value is None else str(value))
-            elif kind == "multiline_list":
-                tw = widget_info["text_widget"]
-                tw.delete("1.0", "end")
-                tw.insert("1.0", "\n".join(str(v) for v in (value or [])))
-            elif kind in ("tuple_floats", "tuple_strs"):
-                widget_info["var"].set(", ".join(str(v) for v in (value or ())))
+        for varname in self.field_widgets:
+            self._apply_value_to_widget(varname, getattr(config, varname, None))
+
+        # Bootstrap: nếu truyện đang active chưa từng có config riêng (vd lần
+        # đầu dùng tính năng này), tự tạo từ giá trị hiện tại trong config.py
+        # -> sau này chuyển sang truyện khác rồi quay lại vẫn khôi phục đúng.
+        current_novel = getattr(config, "NOVEL_NAME", "")
+        if current_novel and load_novel_config(current_novel) is None:
+            snapshot = {}
+            for varname, label, kind, options, section in FIELD_SPECS:
+                value = getattr(config, varname, None)
+                if kind in ("tuple_floats", "tuple_strs") and value is not None:
+                    value = list(value)
+                snapshot[varname] = value
+            try:
+                save_novel_config(current_novel, snapshot)
+            except Exception:
+                pass  # không chặn khởi động GUI nếu ghi lỗi -- Lưu tay vẫn hoạt động bình thường
 
     def _save(self):
         novel_name = self.novel_var.get().strip()
@@ -475,6 +688,8 @@ class ConfigTab(ttk.Frame):
             messagebox.showerror("Lỗi đọc config.py", str(exc), parent=self)
             return
 
+        novel_values = {}   # gom lại để lưu riêng cho novel_name, song song với việc ghi config.py
+
         try:
             content = set_scalar(content, "NOVEL_NAME", repr(novel_name))
 
@@ -483,7 +698,9 @@ class ConfigTab(ttk.Frame):
                 label = next(f[1] for f in FIELD_SPECS if f[0] == varname)
 
                 if kind == "checkbox":
-                    content = set_scalar(content, varname, repr(bool(widget_info["var"].get())))
+                    value = bool(widget_info["var"].get())
+                    content = set_scalar(content, varname, repr(value))
+                    novel_values[varname] = value
 
                 elif kind in ("dropdown_strict", "dropdown_editable", "entry"):
                     raw = widget_info["var"].get()
@@ -495,11 +712,13 @@ class ConfigTab(ttk.Frame):
                             f"(cần kiểu {widget_info['original_type'].__name__})"
                         )
                     content = set_scalar(content, varname, repr(coerced))
+                    novel_values[varname] = coerced
 
                 elif kind == "multiline_list":
                     raw_text = widget_info["text_widget"].get("1.0", "end").strip()
                     items = [ln.strip() for ln in raw_text.splitlines() if ln.strip()]
                     content = set_list(content, varname, items)
+                    novel_values[varname] = items
 
                 elif kind == "tuple_floats":
                     raw = widget_info["var"].get()
@@ -509,11 +728,13 @@ class ConfigTab(ttk.Frame):
                     except ValueError:
                         raise ValueError(f"Giá trị không hợp lệ cho '{label}': '{raw}' (cần các số cách nhau bởi dấu phẩy)")
                     content = set_scalar(content, varname, repr(nums))
+                    novel_values[varname] = list(nums)
 
                 elif kind == "tuple_strs":
                     raw = widget_info["var"].get()
                     parts = tuple(p.strip() for p in raw.split(",") if p.strip())
                     content = set_scalar(content, varname, repr(parts))
+                    novel_values[varname] = list(parts)
 
         except ValueError as exc:
             messagebox.showerror("Giá trị không hợp lệ", str(exc), parent=self)
@@ -529,6 +750,16 @@ class ConfigTab(ttk.Frame):
         except Exception as exc:
             messagebox.showerror("Lỗi khi ghi config.py", str(exc), parent=self)
             return
+
+        try:
+            save_novel_config(novel_name, novel_values)
+        except Exception as exc:
+            messagebox.showwarning(
+                "Cảnh báo",
+                f"Đã lưu config.py nhưng lưu config riêng cho \"{novel_name}\" bị lỗi: {exc}\n"
+                f"config.py vẫn đúng, chỉ là lần sau chọn lại truyện này có thể không tự khôi phục.",
+                parent=self,
+            )
 
         try:
             importlib.reload(config)
@@ -601,19 +832,139 @@ class ScriptTab(ttk.Frame):
                 self.progress_rows[wid] = {"file": file_var, "phase": phase_var, "pct": pct_var, "bar": pb}
             ttk.Label(outer, textvariable=self.progress_done_var, anchor="w").pack(fill="x", padx=6, pady=(3, 5))
 
-        log_frame = ttk.Frame(self)
-        log_frame.pack(fill="both", expand=True, padx=8, pady=(0, 8))
+        if self.script_filename == "TextCleaner.py":
+            # Keyword editor riêng cho TextCleaner: DELETE/KEEP/UI_JUNK_WORDS/checkbox
+            # ở trên (cao vừa đủ), SUSPECTED + Log chia đôi trái/phải bên dưới, chiếm
+            # hết phần còn lại của tab.
+            self._build_keyword_editor()
+            self._build_suspected_and_log_pane()
+            self._load_keyword_editor()
+        else:
+            log_frame = ttk.Frame(self)
+            log_frame.pack(fill="both", expand=True, padx=8, pady=(0, 8))
+            self._build_log_widget(log_frame)
 
+    def _clear_log(self):
+        self.log_text.config(state="normal")
+        self.log_text.delete("1.0", "end")
+        self.log_text.config(state="disabled")
+
+    def _build_log_widget(self, parent):
+        """Tạo khung log (Text + Scrollbar) bên trong `parent`, gán vào self.log_text.
+        Dùng chung cho layout thường (full-width, 8 tab kia) và layout chia đôi
+        (TextCleaner, cột phải của PanedWindow)."""
         self.log_text = tk.Text(
-            log_frame, state="disabled", wrap="word", font=("Consolas", 9),
+            parent, state="disabled", wrap="word", font=("Consolas", 9),
             background="#111318", foreground="#dddddd", insertbackground="#dddddd",
         )
-        vscroll = ttk.Scrollbar(log_frame, orient="vertical", command=self.log_text.yview)
+        vscroll = ttk.Scrollbar(parent, orient="vertical", command=self.log_text.yview)
         self.log_text.configure(yscrollcommand=vscroll.set)
         self.log_text.pack(side="left", fill="both", expand=True)
         vscroll.pack(side="right", fill="y")
 
-    def _clear_log(self):
+    def _build_suspected_and_log_pane(self):
+        """SUSPECTED (trái) + Log (phải) trong 1 PanedWindow ngang — kéo được để
+        đổi tỉ lệ, cả 2 bên cùng chiếm hết chiều cao còn lại của tab."""
+        pane = ttk.PanedWindow(self, orient="horizontal")
+        pane.pack(fill="both", expand=True, padx=8, pady=(0, 8))
+
+        left = ttk.Frame(pane)
+        ttk.Label(
+            left,
+            text="SUSPECTED — dòng lặp nhiều lần TextCleaner tự phát hiện, chưa xếp loại. "
+                 "Cắt/dán sang DELETE hoặc KEEP ở trên rồi xoá khỏi đây.",
+            wraplength=380, foreground="#555",
+        ).pack(anchor="w", padx=4, pady=(4, 2))
+        self.kw_suspected_text = tk.Text(left, font=("Consolas", 9), wrap="word")
+        susp_scroll = ttk.Scrollbar(left, orient="vertical", command=self.kw_suspected_text.yview)
+        self.kw_suspected_text.configure(yscrollcommand=susp_scroll.set)
+        self.kw_suspected_text.pack(side="left", fill="both", expand=True, padx=(4, 0), pady=(0, 4))
+        susp_scroll.pack(side="right", fill="y", pady=(0, 4))
+        pane.add(left, weight=1)
+
+        right = ttk.Frame(pane)
+        self._build_log_widget(right)
+        pane.add(right, weight=1)
+
+    def _build_keyword_editor(self):
+        outer = ttk.LabelFrame(self, text="🔑 Keyword (TextCleaner_KeyWord.log) — theo truyện hiện tại")
+        outer.pack(fill="x", padx=8, pady=(0, 8))
+
+        cols = ttk.Frame(outer)
+        cols.pack(fill="x", padx=6, pady=6)
+        cols.columnconfigure(0, weight=1, uniform="kwcol")
+        cols.columnconfigure(1, weight=1, uniform="kwcol")
+        cols.columnconfigure(2, weight=1, uniform="kwcol")
+
+        self.kw_delete_text = self._make_kw_column(cols, 0, "DELETE — xoá dòng CHỨA từ này")
+        self.kw_keep_text   = self._make_kw_column(cols, 1, "KEEP — giữ lại dù trùng DELETE")
+        self.kw_junk_text   = self._make_kw_column(cols, 2, "UI_JUNK_WORDS — khớp ĐÚNG cả dòng")
+
+        mid = ttk.Frame(outer)
+        mid.pack(fill="x", padx=6, pady=(0, 4))
+        self.kw_numbers_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(
+            mid, text="Tự xoá dòng chỉ chứa 1 số (UI_JUNK_NUMBERS) — tắt nếu truyện dùng số đơn để đánh dấu phân cảnh",
+            variable=self.kw_numbers_var,
+        ).pack(anchor="w")
+
+        btn_row = ttk.Frame(outer)
+        btn_row.pack(fill="x", padx=6, pady=(4, 6))
+        ttk.Button(btn_row, text="🔄 Tải lại", command=self._load_keyword_editor).pack(side="left")
+        ttk.Button(btn_row, text="💾 Lưu keyword", command=self._save_keyword_editor).pack(side="left", padx=(6, 0))
+        self.kw_status_var = tk.StringVar(value="")
+        ttk.Label(btn_row, textvariable=self.kw_status_var, foreground="#2a7d2a").pack(side="left", padx=10)
+
+    @staticmethod
+    def _make_kw_column(parent, col, label):
+        frame = ttk.Frame(parent)
+        frame.grid(row=0, column=col, sticky="nsew", padx=4)
+        ttk.Label(frame, text=label, wraplength=220).pack(anchor="w")
+        row = ttk.Frame(frame)
+        row.pack(fill="both", expand=True)
+        text = tk.Text(row, height=8, width=28, font=("Consolas", 9))
+        scroll = ttk.Scrollbar(row, orient="vertical", command=text.yview)
+        text.configure(yscrollcommand=scroll.set)
+        text.pack(side="left", fill="both", expand=True)
+        scroll.pack(side="right", fill="y")
+        return text
+
+    @staticmethod
+    def _set_kw_text(widget, lines):
+        widget.delete("1.0", "end")
+        widget.insert("1.0", "\n".join(lines))
+
+    @staticmethod
+    def _get_kw_lines(widget):
+        return [ln.strip() for ln in widget.get("1.0", "end").splitlines() if ln.strip()]
+
+    def _load_keyword_editor(self):
+        try:
+            sections, ui_junk_numbers = read_keyword_sections()
+        except Exception as exc:
+            messagebox.showerror("Lỗi đọc keyword", str(exc), parent=self)
+            return
+        self._set_kw_text(self.kw_delete_text, sections["delete"])
+        self._set_kw_text(self.kw_keep_text, sections["keep"])
+        self._set_kw_text(self.kw_junk_text, sections["ui_junk_words"])
+        self._set_kw_text(self.kw_suspected_text, sections["suspected"])
+        self.kw_numbers_var.set(ui_junk_numbers)
+        self.kw_status_var.set("")
+
+    def _save_keyword_editor(self):
+        try:
+            write_keyword_sections(
+                delete_lines=self._get_kw_lines(self.kw_delete_text),
+                keep_lines=self._get_kw_lines(self.kw_keep_text),
+                ui_junk_words_lines=self._get_kw_lines(self.kw_junk_text),
+                ui_junk_numbers=bool(self.kw_numbers_var.get()),
+                suspected_lines=self._get_kw_lines(self.kw_suspected_text),
+            )
+        except Exception as exc:
+            messagebox.showerror("Lỗi lưu keyword", str(exc), parent=self)
+            return
+        self.kw_status_var.set("✅ Đã lưu lúc " + datetime.now().strftime("%H:%M:%S"))
+        self._load_keyword_editor()
         self.log_text.config(state="normal")
         self.log_text.delete("1.0", "end")
         self.log_text.config(state="disabled")
@@ -721,6 +1072,8 @@ class ScriptTab(ttk.Frame):
         self.start_btn.config(state="normal")
         self.stop_btn.config(state="disabled")
         self.status_var.set("Đã dừng")
+        if self.script_filename == "TextCleaner.py" and hasattr(self, "_load_keyword_editor"):
+            self._load_keyword_editor()
 
     def stop(self):
         if self.proc is None:
@@ -835,6 +1188,9 @@ class App(tk.Tk):
     def _on_config_saved(self):
         self._refresh_status_bar()
         self.title(f"Novel-to-Audio Pipeline — {getattr(config, 'NOVEL_NAME', '')}")
+        for tab in self.script_tabs:
+            if hasattr(tab, "_load_keyword_editor"):
+                tab._load_keyword_editor()
 
     def _on_close(self):
         running = [t for t in self.script_tabs if t.is_running()]
