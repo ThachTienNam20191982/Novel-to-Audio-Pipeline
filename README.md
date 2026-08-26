@@ -1,22 +1,18 @@
 # 📚 Novel-to-Audio Pipeline
 
-Tự động tải chương truyện từ web → trích xuất text → làm sạch → tạo file audio MP3.
+Tự động hoá việc chuyển 1 bộ truyện từ web đọc truyện thành audiobook: tải PDF từng chương → trích xuất text → dọn dẹp → tạo giọng đọc MP3 → gộp thành file nghe hoàn chỉnh. Điều khiển toàn bộ qua **GUI** (`gui.py` / `gui.exe`) hoặc chạy tay từng script.
 
----
-
-## 📋 Mục lục
+## Mục lục
 
 - [Yêu cầu hệ thống](#yêu-cầu-hệ-thống)
-- [Cài đặt môi trường](#cài-đặt-môi-trường)
-- [Cấu trúc thư mục](#cấu-trúc-thư-mục)
+- [Cài đặt](#cài-đặt)
+- [⭐ Cách dùng nhanh nhất — GUI](#-cách-dùng-nhanh-nhất--gui)
+- [Cấu trúc dự án](#cấu-trúc-dự-án)
+- [config.py — cấu hình trung tâm](#configpy--cấu-hình-trung-tâm)
 - [Pipeline tổng quan](#pipeline-tổng-quan)
-- [Hướng dẫn từng bước](#hướng-dẫn-từng-bước)
-  - [Bước 1 — RawDownloader](#bước-1--rawdownloader)
-  - [Bước 2 — TextExtractor](#bước-2--textextractor)
-  - [Bước 3 — TextCleaner](#bước-3--textcleaner)
-  - [Bước 4 — AudioGenerator](#bước-4--audiogenerator)
-- [Cách test từng bước](#cách-test-từng-bước)
-- [Tự cải thiện pipeline theo thời gian](#tự-cải-thiện-pipeline-theo-thời-gian)
+- [Hướng dẫn từng script](#hướng-dẫn-từng-script)
+- [Đóng gói GUI thành .exe](#đóng-gói-gui-thành-exe)
+- [Log & file trạng thái](#log--file-trạng-thái)
 - [Troubleshooting](#troubleshooting)
 
 ---
@@ -25,419 +21,222 @@ Tự động tải chương truyện từ web → trích xuất text → làm s�
 
 | Thành phần | Yêu cầu |
 |---|---|
-| Python | 3.10 trở lên |
-| Google Chrome | Bản mới nhất |
-| ffmpeg + ffprobe | Để merge audio (xem hướng dẫn bên dưới) |
-| RAM | Tối thiểu 4GB, khuyến nghị 8GB+ |
-| Kết nối mạng | Bắt buộc cho Bước 1 và Bước 4 |
+| Python | 3.10+ (bản cài từ python.org trên Windows đã có sẵn `tkinter` cho GUI; trên Linux có thể cần cài thêm gói hệ thống `python3-tk`) |
+| Google Chrome | Bản mới nhất — `RawDowloader.py` dùng Selenium điều khiển Chrome để tải PDF từng chương |
+| RAM | Tối thiểu 4GB, khuyến nghị 8GB+ khi tăng số worker song song (`RAWDL_WORKER_COUNT`, `AUDIOGEN_MAX_WORKERS`) |
+| Mạng | Bắt buộc cho `RawDowloader.py` (tải chương) và `AudioGenerator.py` (gọi dịch vụ TTS của Edge) |
 
-### ffmpeg
+> Selenium 4.6+ có Selenium Manager, tự tải và khớp version ChromeDriver với Chrome đang cài — không cần tải ChromeDriver thủ công.
 
-Project đã bao gồm sẵn `bin/` để chứa ffmpeg — **không cần cài vào hệ thống**.
-
-**Cách chuẩn bị:**
-
-1. Tải ffmpeg tại https://www.gyan.dev/ffmpeg/builds/ (Windows) hoặc https://ffmpeg.org/download.html
-2. Giải nén, lấy 2 file `ffmpeg.exe` và `ffprobe.exe`
-3. Bỏ vào thư mục `bin/` của project
-
-```
-bin/
-├── ffmpeg.exe
-└── ffprobe.exe
-```
-
-`AudioGenerator.py` sẽ tự tìm ffmpeg trong `bin/` khi chạy, không cần cấu hình thêm.
-
-> **ChromeDriver:** Selenium 4.6+ có **Selenium Manager** tự tải và quản lý ChromeDriver phù hợp với version Chrome hiện tại — không cần cài tay.
-
----
-
-## Cài đặt môi trường
+## Cài đặt
 
 ```bash
-# 1. Clone repo
-git clone <your-repo-url>
-cd <repo-folder>
-
-# 2. Tạo virtual environment
+git clone <repo-url>
+cd <thư-mục-repo>
 python -m venv .venv
 
-# 3. Kích hoạt venv
-# Windows:
+# Windows
 .venv\Scripts\activate
-# Linux/macOS:
+# Linux/macOS
 source .venv/bin/activate
 
-# 4. Cài thư viện
 pip install -r requirements.txt
 ```
 
-**`requirements.txt`:**
+---
 
+## ⭐ Cách dùng nhanh nhất — GUI
+
+Thay vì mở từng script bằng tay, dùng **`gui.py`** — 1 file duy nhất điều khiển toàn bộ 9 script + toàn bộ `config.py`.
+
+```bash
+python gui.py
 ```
-selenium
-PyMuPDF
-edge-tts
-docx2txt
-rich
-```
+
+Hoặc double-click **`gui.exe`** nếu đã đóng gói (xem [Đóng gói GUI thành .exe](#đóng-gói-gui-thành-exe)) — mở thẳng giao diện, không cần mở cmd, không cần gõ lệnh Python.
+
+**Bố cục:**
+
+- Tab **⚙️ Config** — sửa toàn bộ `config.py` trên giao diện thay vì mở file text:
+  - Chọn truyện đang xử lý qua dropdown (chỉ hiện các truyện đã có trong `Data/`) hoặc **"+ Thêm truyện mới..."** để tạo truyện mới.
+  - Mỗi truyện tự nhớ cấu hình riêng (lưu trong `Data/<tên truyện>/Log/pipeline_config.json`) — chọn lại truyện cũ sẽ tự nạp lại đúng URL/số chương/giọng đọc... của truyện đó, không bị lẫn giữa các truyện.
+  - Tham số chia 2 cột: **Cấu hình đơn giản** (dropdown/checkbox — chế độ crawl, giọng đọc, bitrate, số worker...) và **Cấu hình nâng cao** (ô nhập tay — URL, số chương, các ngưỡng, regex...).
+  - Nút **💾 Lưu cấu hình** ghi vào `config.py` (có backup timestamp vào `config_backup/` trước khi ghi đè) và lưu riêng cho đúng truyện đang chọn.
+- 9 tab còn lại — mỗi tab ứng với 1 script, có nút **▶ Start**, **■ Stop**, khung log hiển thị output thực tế theo thời gian thực.
+  - Tab **TextCleaner** có thêm khu vực chỉnh keyword trực quan (xem mục [TextCleaner.py](#4-textcleanerpy)) thay vì phải mở `TextCleaner_KeyWord.log` bằng tay.
+  - Tab **AudioGenerator** hiển thị thanh tiến độ riêng cho từng worker (file đang đọc, phase, % hoàn thành).
+
+> **Lưu ý đã biết:** trên một số máy Windows, bấm Start nhiều lần liên tiếp trên cùng 1 tab đôi khi bị treo giao diện, log chỉ hiện ra khi script chạy xong thay vì theo thời gian thực. Đang tìm nguyên nhân chính xác; nếu gặp phải, workaround tạm thời là đóng và mở lại `gui.py`/`gui.exe`.
+
+Dù dùng GUI hay chạy tay từng file, **`config.py` vẫn là nơi duy nhất 9 script thực sự đọc khi chạy** — GUI chỉ là công cụ đọc/ghi file đó an toàn hơn, không thay thế nó.
 
 ---
 
-## Cấu trúc thư mục
+## Cấu trúc dự án
 
 ```
-project/
-│
-├── bin/                        # ffmpeg, ffprobe
-│   ├── ffmpeg.exe
-│   └── ffprobe.exe
-│
-├── Raw/                        # PDF thô tải về (output Bước 1)
-├── Translate/                  # Text trích xuất từ PDF (output Bước 2)
-├── Cleaned/                    # Text đã làm sạch (output Bước 3)
-├── Audio/                      # File MP3 cuối cùng (output Bước 4)
-├── temp_audio/                 # Chunk tạm trong khi tạo audio (tự xóa)
-│
-├── Log/                        # Log của tất cả các bước
-│   ├── RawDownloader_log.log
-│   ├── TextExtractor_log.log
-│   ├── TextCleaner_log.log
-│   ├── TextCleaner_KeyWord.log # Keyword để lọc text (tự học)
-│   └── AudioGenerator_Log.log
-│
-├── RawDowloader.py
-├── TextExtractor.py
-├── TextCleaner.py
-├── AudioGenerator.py
+.
+├── gui.py                  # GUI điều khiển toàn bộ pipeline (khuyến nghị dùng)
+├── build_exe.bat           # Đóng gói gui.py -> gui.exe (double-click để build)
+├── config.py                # Cấu hình trung tâm — đổi NOVEL_NAME để chuyển truyện
+├── RawDowloader.py           # Bước 1: tải PDF từng chương
+├── TextExtractor.py          # Bước 2: PDF -> text thô
+├── TextCheck.py               # (tuỳ chọn) kiểm tra Raw/ có thiếu chương nào không
+├── TextCleaner.py             # Bước 3: dọn rác theo keyword
+├── TitleDelete.py              # (tuỳ chọn) xoá dòng rác cố định ở đầu mỗi chương
+├── TextSplit.py                 # (đường vào khác) tách 1 file text lớn thành từng chương
+├── TextMerge.py                  # (tuỳ chọn) gộp nhiều chương .txt thành từng cụm
+├── AudioGenerator.py              # Bước 4: text -> mp3 từng chương (TTS)
+├── AudioMerger.py                  # Bước 5: gộp mp3 từng chương thành file lớn
+├── bin/                              # (tuỳ chọn) đặt ffmpeg.exe/ffprobe.exe ở đây nếu không cài vào PATH hệ thống
 ├── requirements.txt
-└── README.md
+├── README.md
+├── config_backup/            # GUI tự tạo — backup config.py có timestamp mỗi lần Lưu
+└── Data/
+    └── <Tên truyện>/          # 1 thư mục riêng cho mỗi truyện, tự tạo khi đổi NOVEL_NAME
+        ├── Raw/                 # PDF gốc từng chương          (RawDowloader)
+        ├── Translate/            # Text thô sau khi trích PDF   (TextExtractor, TextSplit input)
+        ├── Cleaned/               # Text đã dọn rác              (TextCleaner, TitleDelete, AudioGenerator input)
+        ├── Text_Merged/            # Text gộp theo cụm            (TextMerge, không dùng cho bước audio)
+        ├── Audio/                   # MP3 từng chương              (AudioGenerator output, AudioMerger input)
+        ├── Merged/                   # MP3 đã gộp cụm               (AudioMerger output — sản phẩm cuối)
+        ├── temp_audio/                 # File tạm khi tạo audio       (AudioGenerator, tự dọn khi xong)
+        └── Log/                         # Log từng script + file trạng thái
+            ├── TextCleaner_KeyWord.log     # Danh sách keyword lọc rác
+            ├── pipeline_config.json         # Config riêng của truyện này (GUI tự quản lý)
+            ├── AudioMerger_state.json        # Trạng thái resume của AudioMerger
+            └── *_log.log                      # Log chi tiết từng script
 ```
 
-Các thư mục `Raw/`, `Translate/`, `Cleaned/`, `Audio/`, `Log/` sẽ được tạo tự động khi chạy. Không cần tạo tay.
+## config.py — cấu hình trung tâm
+
+Toàn bộ tham số của cả 9 script nằm trong 1 file `config.py`, chia theo section rõ ràng theo tên từng file (`RawDowloader.py — CONFIG`, `AudioGenerator.py — CONFIG`...). Đổi truyện = đổi đúng 1 dòng:
+
+```python
+NOVEL_NAME = "Tên truyện của bạn"
+```
+
+Toàn bộ thư mục `Data/<NOVEL_NAME>/...` tự tạo và tự trỏ theo tên này — không cần sửa gì khác, không cần clone lại repo khi chuyển sang truyện mới. Có thể sửa trực tiếp file này bằng text editor, hoặc dùng tab **⚙️ Config** trong `gui.py` (khuyến nghị — có kiểm tra kiểu dữ liệu, dropdown cho các giá trị cố định, tự nhớ theo từng truyện).
 
 ---
 
 ## Pipeline tổng quan
 
 ```
-[Web] ──► RawDownloader ──► Raw/*.pdf
-                                │
-                         TextExtractor ──► Translate/*.txt
-                                                │
-                                         TextCleaner ──► Cleaned/*.txt
-                                                              │
-                                                       AudioGenerator ──► Audio/*.mp3
+                    ┌─────────────────┐
+  (đã có sẵn text)  │  TextSplit.py   │  ← đường vào khác: có sẵn 1 file text lớn
+        ┌──────────►│  (tuỳ chọn)     │    đã dịch (đặt tên Translate/<NOVEL_NAME>.txt)
+        │           └────────┬────────┘
+        │                    │
+┌───────┴──────┐   ┌─────────▼────────┐   ┌────────────────┐   ┌─────────────────┐
+│ RawDowloader │──►│  TextExtractor    │──►│  TextCleaner    │──►│  AudioGenerator  │──► (Audio/)
+│  (Raw/)      │   │  (Translate/)      │   │  (Cleaned/)     │   │   text → mp3      │
+└──────┬───────┘   └─────────┬──────────┘   └────────┬────────┘   └────────┬─────────┘
+       │                     │                        │                      │
+       ▼                     ▼                        ▼                      ▼
+ ┌───────────┐        (không bắt buộc)          ┌───────────────┐    ┌───────────────┐
+ │TextCheck  │                                  │  TitleDelete   │    │  AudioMerger   │
+ │(kiểm tra  │                                  │  (tuỳ chọn)     │    │  mp3 → mp3 gộp  │
+ │thiếu chương)│                                └───────┬────────┘    └────────────────┘
+ └───────────┘                                          ▼
+                                                  ┌──────────────┐
+                                                  │ TextMerge     │
+                                                  │ (tuỳ chọn,    │
+                                                  │  không phục vụ│
+                                                  │  bước audio)  │
+                                                  └──────────────┘
 ```
 
-Mỗi bước đều có **resume**: nếu bị gián đoạn giữa chừng, chạy lại script sẽ tự bỏ qua file đã xử lý xong, tiếp tục từ chỗ còn dang dở.
+**Chuỗi bắt buộc để ra audio hoàn chỉnh:** RawDowloader → TextExtractor → TextCleaner → AudioGenerator → AudioMerger.
+**Tuỳ chọn/bổ trợ:** TextCheck (kiểm tra), TitleDelete (dọn thêm rác đặc thù truyện), TextMerge (gộp text để đọc/lưu riêng, không cần cho audio).
+**Đường vào khác:** TextSplit — dùng khi đã có sẵn 1 file text lớn đã dịch (không cần RawDowloader + TextExtractor).
 
 ---
 
-## Hướng dẫn từng bước
+## Hướng dẫn từng script
+
+### 1. RawDowloader.py
+Tải PDF từng chương bằng Selenium điều khiển Chrome, có bước tự động xoá quảng cáo trước khi in PDF. 2 chế độ (`RAWDL_CRAWL_MODE`):
+- **`index`** — sinh URL theo `RAWDL_URL_TEMPLATE` (chứa `{}` thay số chương) + `RAWDL_START_CHAPTER`/`RAWDL_END_CHAPTER`.
+- **`navigate`** — bắt đầu từ `RAWDL_URL_FIRST_CHAPTER`, tự tìm link "chương sau" trên từng trang để lần lượt thu thập URL (lưu tạm vào `Log/RawDownloader_Prepare.log`), rồi mới tải song song.
+
+Tự resume — chương đã tải rồi sẽ bỏ qua ở lần chạy sau. Số luồng tải song song: `RAWDL_WORKER_COUNT`.
+
+### 2. TextExtractor.py
+Trích text từ toàn bộ PDF trong `Raw/`, lưu vào `Translate/`. Tự tính số chữ số cần đệm theo số chương lớn nhất đang có (vd 980 chương → `Chương_001.txt` … `Chương_980.txt`) để sắp xếp đúng thứ tự ở các bước sau, kèm cảnh báo nếu phát hiện file cũ bị đệm số khác (thường do lần trước `Raw/` chưa tải đủ). Có báo cáo file nghi ngờ quá ngắn/quá dài bất thường so với trung bình (`TEXTEXTRACT_MIN_WORD_COUNT`, `TEXTEXTRACT_ANOMALY_THRESHOLD`).
+
+### 3. TextCheck.py
+Tiện ích kiểm tra nhanh: quét `Raw/`, báo chương đầu/cuối/tổng số file và liệt kê số chương bị thiếu nếu có. Không tạo file mới.
+
+### 4. TextCleaner.py
+Dọn rác trong text theo `Log/TextCleaner_KeyWord.log`, gồm 5 phần:
+- `[DELETE]` — xoá dòng **chứa** từ khoá (khớp 1 phần).
+- `[KEEP]` — bảo vệ dòng, ưu tiên hơn `[DELETE]` nếu trùng.
+- `[UI_JUNK_WORDS]` — xoá dòng khớp **chính xác** cả dòng (nút bấm, nhãn UI ngắn).
+- `[UI_JUNK_NUMBERS]` — bật/tắt tự xoá dòng chỉ chứa 1 số nguyên đơn.
+- `[SUSPECTED]` — TextCleaner tự đề xuất (dòng lặp ≥5 lần trong cùng 1 lần chạy mà chưa được xếp loại), người dùng xem rồi tự chuyển sang `DELETE`/`KEEP`.
+
+File này có thể sửa tay, hoặc sửa trực quan trong tab **TextCleaner** của `gui.py` (3 ô DELETE/KEEP/UI_JUNK_WORDS, checkbox UI_JUNK_NUMBERS, ô SUSPECTED riêng cạnh khung log) — tab tự tải lại SUSPECTED mới sau mỗi lần chạy. Không có resume — mỗi lần chạy xử lý lại toàn bộ file trong `Translate/`.
+
+### 5. TitleDelete.py
+Xoá các dòng rác cố định ở **đầu mỗi chương** trong `Cleaned/`, theo danh sách regex `TITLEDEL_JUNK_PATTERNS` trong `config.py` — đặc thù riêng từng truyện/nguồn convert (vd tên truyện cũ sót lại, tiền tố kiểu "Nguồn: ...").
+
+### 6. TextSplit.py
+Đường vào khác cho trường hợp đã có sẵn 1 file text lớn đã dịch (không qua RawDowloader/TextExtractor): đặt file tại `Translate/<NOVEL_NAME>.txt`, mỗi chương trong file phải có dòng đánh dấu dạng `Chương <số>` ở đầu dòng — script tách thành từng file `Chương_XXX.txt` trong `Cleaned/`.
+
+### 7. TextMerge.py
+Gộp các file trong `Cleaned/` thành từng cụm theo `TEXTMERGE_MERGE_SIZE` chương/file (0 = gộp hết thành 1), lưu vào `Text_Merged/`. Không phục vụ bước tạo audio (AudioGenerator đọc trực tiếp từ `Cleaned/`) — dùng khi cần bản text gộp để đọc/lưu/đăng riêng.
+
+### 8. AudioGenerator.py
+Chuyển từng file trong `Cleaned/` thành mp3 bằng Edge TTS (`AUDIOGEN_VOICE`), chạy `AUDIOGEN_MAX_WORKERS` tiến trình song song, mỗi tiến trình xử lý `AUDIOGEN_TTS_CONCURRENT` chunk cùng lúc. Tự retry khi lỗi, tự chờ lâu hơn khi bị TTS giới hạn tốc độ (nhận diện qua `AUDIOGEN_THROTTLE_KEYWORDS`). Chương dài chia thành nhiều "part" theo `AUDIOGEN_MAX_CHUNKS_PER_PART`. Có resume — chunk đã tạo và hợp lệ sẽ bỏ qua. Chạy trực tiếp trong terminal hiện bảng tiến độ đẹp (thư viện `rich`); chạy qua `gui.py` tự chuyển sang gửi dữ liệu tiến độ cho GUI vẽ thanh riêng.
+
+### 9. AudioMerger.py
+Gộp các mp3 trong `Audio/` thành từng file lớn bằng ffmpeg, chia nhóm theo `AUDIOMERGE_CHAPTERS_PER_GROUP` chương và/hoặc `AUDIOMERGE_MAX_DURATION_SECONDS` giây (đạt 1 trong 2 ngưỡng là chốt nhóm). Tên file vd `1.<Tên truyện>_001-010.mp3`. Có resume qua `Log/AudioMerger_state.json` + kiểm tra lại file output còn hợp lệ không trước khi bỏ qua. Có verify tổng thời lượng sau khi gộp (`AUDIOMERGE_VERIFY_ENABLE`).
 
 ---
 
-### Bước 1 — RawDownloader
+## Đóng gói GUI thành .exe
 
-**Mục đích:** Dùng Selenium điều khiển Chrome, tải từng chương truyện thành file PDF, lưu vào `Raw/`.
+Double-click **`build_exe.bat`** (đặt cùng thư mục với `gui.py`) — script tự cài PyInstaller nếu chưa có, build, dọn file tạm, để lại đúng 1 file `gui.exe` cùng thư mục với các script. Từ đó chỉ cần double-click `gui.exe`, không cần cài đặt gì thêm để MỞ giao diện — nhưng máy vẫn cần Python + các thư viện trong `requirements.txt` đã cài sẵn để 9 script bên trong chạy được (gui.exe chỉ đóng gói riêng phần giao diện).
 
-#### Cấu hình trước khi chạy
+> Windows Defender đôi khi báo nhầm với `.exe` đóng gói bằng PyInstaller (do cách `--onefile` tự giải nén lúc chạy) — nếu bị chặn, thêm ngoại lệ cho `gui.exe`.
 
-Mở `RawDowloader.py`, chỉnh phần CONFIG ở đầu file:
-
-```python
-START_CHAPTER = 1        # Chương bắt đầu tải
-END_CHAPTER   = 1876     # Chương kết thúc
-
-URL_TEMPLATE = "https://www.tvtruyen.com/dai-can-truong-sinh/chuong-{}/"
-# Thay bằng URL truyện bạn muốn tải, giữ nguyên {} là placeholder số chương
-
-WORKER_COUNT = 10        # Số luồng song song — tăng nếu mạng tốt, giảm nếu bị block
-LOAD_WAIT_TIME  = 4      # Giây chờ sau khi load trang (tăng nếu trang chậm)
-MAX_RETRY    = 3         # Số lần retry khi lỗi
-```
-
-#### Cấu hình xử lý quảng cáo (Ad-removal)
-
-```python
-ADV_ISOLATE_REBUILD     = True   # Khuyến nghị bật — rebuild DOM sạch nhất
-ADV_HIDE_CSS            = True   # Ẩn quảng cáo bằng CSS
-ADV_REMOVE_INLINE       = True   # Xóa banner ảnh
-ADV_REMOVE_OVERLAYS     = True   # Xóa popup/fixed element
-ADV_REMOVE_DOMAIN_NOISE = True   # Xóa footer/sidebar đặc thù từng site
-```
-
-> **Lưu ý:** Nếu sau khi chạy PDF bị trắng nội dung, thử tắt `ADV_REMOVE_OVERLAYS = False` trước, sau đó `ADV_ISOLATE_REBUILD = False`.
-
-#### Cấu hình cắt PDF (tuỳ chọn)
-
-```python
-PDF_SMART_CROP       = False   # Bật nếu PDF có header/footer thừa
-CROP_TOP_FIRST_PAGE  = 250     # Pixel cắt ở đầu trang 1
-REMOVE_LAST_N_PAGES  = 6       # Số trang cuối bị xóa (thường là trang QC của site)
-```
-
-#### Chạy
-
+Build tay không qua `.bat`:
 ```bash
-python RawDowloader.py
+pip install pyinstaller
+pyinstaller --onefile --windowed --name gui --distpath . gui.py
 ```
-
-Terminal sẽ hiện tiến độ dạng `Progress: 45/1876 (2.40%)`. Log chi tiết lưu tại `Log/RawDownloader_log.log`.
 
 ---
 
-### Bước 2 — TextExtractor
+## Log & file trạng thái
 
-**Mục đích:** Đọc từng file PDF trong `Raw/`, trích xuất text thuần, lưu thành file `.txt` vào `Translate/`.
+Tất cả nằm trong `Data/<Tên truyện>/Log/`:
 
-#### Cấu hình
+| File | Nội dung |
+|---|---|
+| `RawDownloader_log.log` | Log chi tiết quá trình tải chương |
+| `RawDownloader_Prepare.log` | Danh sách URL đã thu thập (chế độ `navigate`) |
+| `TextExtractor_log.log` | Log trích xuất PDF, cảnh báo file ngắn/lệch đệm số |
+| `TextCleaner_log.log` | Log dọn rác từng file, % đã cắt |
+| `TextCleaner_KeyWord.log` | Danh sách keyword lọc rác — sửa tay hoặc qua GUI |
+| `AudioGenerator_Log.log` | Log tạo audio, theo từng session |
+| `AudioMerger_log.log` | Log gộp audio |
+| `AudioMerger_state.json` | Trạng thái resume của AudioMerger |
+| `pipeline_config.json` | Cấu hình riêng của truyện này (GUI tự quản lý, không cần sửa tay) |
 
-```python
-MIN_WORD_COUNT    = 500    # File ít hơn ngưỡng này → đánh dấu nghi vấn ngắn
-ANOMALY_THRESHOLD = 0.30   # File lệch >30% so với trung bình → nghi vấn bất thường
-```
-
-#### Chạy
-
-```bash
-python TextExtractor.py
-```
-
-Sau khi chạy xong, script in báo cáo gồm 3 nhóm cần chú ý:
-
-- **NGHI NGỜ FILE NGẮN** — số từ dưới `MIN_WORD_COUNT`, có thể PDF lỗi hoặc chương placeholder
-- **NGHI NGỜ FILE NGẮN BẤT THƯỜNG** — ngắn hơn trung bình >30%, có thể thiếu nội dung
-- **NGHI NGỜ FILE DÀI BẤT THƯỜNG** — dài hơn trung bình >30%, có thể bị dính 2 chương hoặc có nhiều quảng cáo
-
-> Kiểm tra thủ công các file trong danh sách này trước khi sang Bước 3.
-
----
-
-### Bước 3 — TextCleaner
-
-**Mục đích:** Lọc bỏ các dòng thừa (quảng cáo, watermark, chữ ký tác giả...) trong file `.txt`, lưu kết quả vào `Cleaned/`.
-
-#### Hệ thống keyword
-
-TextCleaner hoạt động dựa trên file `Log/TextCleaner_KeyWord.log` với 3 section:
-
-```
-[DELETE]
-tên website
-link tài trợ
-chữ ký người dịch
-
-[KEEP]
-từ cần bảo toàn dù chứa keyword xấu
-
-[SUSPECTED]
-(tự động — các dòng lặp lại ≥5 lần chưa được phân loại)
-```
-
-**Lần đầu chạy:** Nếu chưa có file keyword, script sẽ **tự tạo** `Log/TextCleaner_KeyWord.log` với cấu trúc rỗng — không cần tạo tay. Chạy lần đầu xong sẽ có danh sách `[SUSPECTED]` để bắt đầu phân loại.
-
-#### Cấu hình
-
-```python
-HEAVY_DELETE_THRESHOLD = 10   # % — file bị xóa nhiều hơn ngưỡng này → cảnh báo
-```
-
-#### Chạy
-
-```bash
-python TextCleaner.py
-```
-
-Sau mỗi lần chạy, script tự cập nhật section `[SUSPECTED]` trong keyword file với các dòng lặp lại ≥5 lần — đây là gợi ý để bạn xem xét thêm vào `[DELETE]` hoặc `[KEEP]`.
-
----
-
-### Bước 4 — AudioGenerator
-
-**Mục đích:** Đọc từng file `.txt` trong `Cleaned/`, dùng Microsoft Edge TTS (giọng `vi-VN-HoaiMyNeural`) tạo audio, merge thành file MP3, lưu vào `Audio/`.
-
-#### Cấu hình
-
-```python
-VOICE      = "vi-VN-HoaiMyNeural"   # Giọng đọc — xem thêm giọng khác bên dưới
-CHUNK_SIZE = 1500                    # Ký tự mỗi chunk TTS (không nên tăng quá 2000)
-
-MAX_RETRY        = 5                 # Retry mỗi chunk khi lỗi
-TTS_CONCURRENT   = 3                 # Số chunk TTS chạy đồng thời (tăng nếu mạng tốt)
-MAX_WORKERS      = 5                 # Số file xử lý song song
-WORKER_STAGGER   = 2.0               # Giây delay giữa mỗi worker khi start
-```
-
-**Các giọng tiếng Việt khác của Edge TTS:**
-
-| Giọng | Giới tính | Phong cách |
-|---|---|---|
-| `vi-VN-HoaiMyNeural` | Nữ | Tự nhiên, phổ thông |
-| `vi-VN-NamMinhNeural` | Nam | Tự nhiên, phổ thông |
-
-#### Chạy
-
-```bash
-python AudioGenerator.py
-```
-
-Terminal hiện bảng Rich UI realtime với trạng thái từng worker. Log chi tiết tại `Log/AudioGenerator_Log.log`.
-
-> **Lưu ý:** AudioGenerator tự tìm ffmpeg trong `bin/`. Đảm bảo `bin/ffmpeg.exe` và `bin/ffprobe.exe` đã có trước khi chạy.
-
----
-
-## Cách test từng bước
-
-Trước khi chạy toàn bộ pipeline với hàng nghìn chương, nên test với số nhỏ trước.
-
-### Test Bước 1 — RawDownloader
-
-```python
-# Sửa tạm trong RawDowloader.py
-START_CHAPTER = 1
-END_CHAPTER   = 3     # Chỉ tải 3 chương
-WORKER_COUNT  = 2     # Dùng ít luồng hơn khi test
-```
-
-Kiểm tra sau khi chạy:
-- `Raw/` có 3 file PDF không?
-- Mở thử 1 file PDF — nội dung có đúng chương đó không? Có còn quảng cáo không?
-- `Log/RawDownloader_log.log` có báo SUCCESS hay ERROR không?
-
-### Test Bước 2 — TextExtractor
-
-Chỉ cần có vài file PDF trong `Raw/` là chạy được. Kiểm tra:
-- `Translate/` có file `.txt` tương ứng không?
-- Mở file txt, đọc thử — text có bị nhảy dòng lạ không? Có bị mất đoạn không?
-- Báo cáo cuối có file nào vào danh sách nghi vấn không? Nếu có, mở ra kiểm tra.
-
-### Test Bước 3 — TextCleaner
-
-Lần đầu chạy, nếu `Log/TextCleaner_KeyWord.log` chưa tồn tại, script sẽ **tự tạo file rỗng** đúng cấu trúc — không cần tạo tay.
-
-Sau lần chạy đầu tiên:
-- Xem section `[SUSPECTED]` — những dòng nào lặp lại thường xuyên và thực sự là rác?
-- Thêm vào `[DELETE]`, chạy lại
-- Kiểm tra `%` bị xóa trong báo cáo — nên nằm trong khoảng 1–5% là lý tưởng
-
-### Test Bước 4 — AudioGenerator
-
-```python
-# Sửa tạm trong AudioGenerator.py
-MAX_WORKERS    = 1    # Chỉ dùng 1 worker khi test
-TTS_CONCURRENT = 1
-```
-
-Kiểm tra:
-- `Audio/` có file MP3 tương ứng không?
-- Nghe thử file MP3 — giọng đọc có tự nhiên không? Có bị cắt giữa câu không?
-- `Log/AudioGenerator_Log.log` có HARD FAIL hay MERGE FAIL không?
-
----
-
-## Tự cải thiện pipeline theo thời gian
-
-### RawDownloader — Thêm site mới
-
-Mỗi site truyện có cấu trúc DOM khác nhau. Khi chuyển sang site mới:
-
-1. Đổi `URL_TEMPLATE` sang URL mới
-2. Kiểm tra PDF output — nếu vẫn còn quảng cáo, mở DevTools của Chrome trên trang đó, tìm `class` hoặc `id` của phần quảng cáo
-3. Thêm vào hàm `step_remove_domain_noise()`:
-
-```python
-elif "ten-site-moi.com" in domain:
-    driver.execute_script("""
-        document.getElementById("your-ad-id")?.remove();
-        document.querySelector(".your-ad-class")?.remove();
-    """)
-```
-
-4. Nếu site lazy-load ảnh, tăng `SCROLL_WAIT_TIME` và `LOAD_WAIT_TIME`
-
-### TextCleaner — Cải thiện keyword
-
-Sau mỗi lần chạy, quy trình cải thiện keyword:
-
-1. Xem `[SUSPECTED]` trong `Log/TextCleaner_KeyWord.log`
-2. Với mỗi dòng suspected:
-   - Là rác (quảng cáo, chữ ký, watermark) → thêm vào `[DELETE]`
-   - Là nội dung thật → thêm vào `[KEEP]` (để tránh bị xóa nhầm nếu sau này thêm keyword liên quan)
-   - Không chắc → để lại `[SUSPECTED]`, kiểm tra thêm vài lần chạy sau
-3. Chạy lại TextCleaner, so sánh % bị xóa trước và sau
-
-> Keyword là **substring matching** (không phân biệt hoa thường). Ví dụ keyword `"tvtruyen"` sẽ xóa bất kỳ dòng nào chứa chuỗi đó.
-
-### AudioGenerator — Tối ưu hiệu suất
-
-Nếu bị throttle (lỗi 1015/1008) thường xuyên:
-```python
-TTS_CONCURRENT   = 2      # Giảm xuống
-THROTTLE_BASE_DELAY = 20  # Tăng thời gian chờ khi bị throttle
-```
-
-Nếu mạng tốt, muốn nhanh hơn:
-```python
-MAX_WORKERS    = 8
-TTS_CONCURRENT = 4
-WORKER_STAGGER = 1.0
-```
-
-Nếu file MP3 bị cắt giữa câu:
-```python
-CHUNK_SIZE = 1000   # Giảm xuống để mỗi chunk ngắn hơn
-```
+Ngoài ra `config_backup/` ở thư mục gốc lưu bản sao `config.py` có timestamp mỗi lần bấm Lưu trong GUI.
 
 ---
 
 ## Troubleshooting
 
-### Chrome không mở được (Bước 1)
-
-```
-selenium.common.exceptions.WebDriverException: 'chromedriver' executable needs to be in PATH
-```
-
-→ ChromeDriver chưa có trong `bin/` hoặc version không khớp Chrome. Kiểm tra lại version Chrome và tải đúng ChromeDriver.
-
-### PDF trắng / thiếu nội dung (Bước 1)
-
-→ `ADV_ISOLATE_REBUILD` rebuild sai div. Thử tắt từng bước ad-removal, bắt đầu từ `ADV_REMOVE_OVERLAYS = False`.
-
-### Text bị ký tự lạ / encoding lỗi (Bước 2)
-
-→ PDF có thể được scan bằng ảnh (không có text layer). PyMuPDF không hỗ trợ OCR — cần dùng thêm Tesseract hoặc đổi nguồn PDF.
-
-### ffmpeg not found (Bước 4)
-
-```
-FileNotFoundError: [WinError 2] The system cannot find the file specified
-```
-
-→ `bin/ffmpeg.exe` chưa có. Tải và bỏ vào `bin/` theo hướng dẫn phần [Yêu cầu hệ thống](#yêu-cầu-hệ-thống).
-
-### Edge TTS bị throttle liên tục (Bước 4)
-
-→ Giảm `TTS_CONCURRENT` xuống 1–2, tăng `THROTTLE_BASE_DELAY` lên 30–60. Nếu vẫn bị, chờ 10–15 phút rồi chạy lại (pipeline có resume, không mất progress).
-
-### File MP3 bị thiếu / corrupt (Bước 4)
-
-→ Xem log, tìm dòng `HARD FAIL` hoặc `MERGE FAIL`. Xóa file MP3 tương ứng trong `Audio/` và folder temp trong `temp_audio/`, chạy lại — pipeline sẽ tự generate lại file đó.
-
----
-
-## Log files
-
-| File | Nội dung |
+| Vấn đề | Hướng xử lý |
 |---|---|
-| `Log/RawDownloader_log.log` | Trạng thái từng chapter: SUCCESS / SKIP / ERROR / FAILED |
-| `Log/TextExtractor_log.log` | Số từ từng file, file nghi vấn ngắn/dài bất thường |
-| `Log/TextCleaner_log.log` | Số ký tự trước/sau clean, % bị xóa từng file |
-| `Log/TextCleaner_KeyWord.log` | Keyword DELETE/KEEP và danh sách SUSPECTED tự học |
-| `Log/AudioGenerator_Log.log` | Trạng thái từng chunk TTS, merge, verify |
-
-Tất cả log đều **append** (không ghi đè), mỗi lần chạy là một session mới được ghi tiếp vào cuối file.
+| `ModuleNotFoundError` khi chạy script | Chưa `pip install -r requirements.txt`, hoặc chưa kích hoạt đúng virtualenv |
+| RawDowloader không tải được / trang trắng | Kiểm tra lại Chrome đã cập nhật, thử tăng `RAWDL_LOAD_WAIT_TIME`/`RAWDL_ADV_EXTRA_WAIT_BEFORE` |
+| PDF vẫn còn dính quảng cáo | Bật thêm các bước `RAWDL_ADV_*` còn tắt; nếu bật hết mà mất luôn nội dung thật, thử tắt `RAWDL_ADV_REMOVE_OVERLAYS` trước |
+| `ffmpeg`/`ffprobe` not found | Đặt `ffmpeg.exe`/`ffprobe.exe` vào thư mục `bin/` cùng cấp với các file `.py` (cả AudioGenerator và AudioMerger đều tự thêm `bin/` vào `PATH` khi chạy), hoặc cài ffmpeg vào `PATH` hệ thống máy |
+| Text sau `TextExtractor` bị sai thứ tự chương | Thường do `Raw/` chưa tải đủ hết chương ở lần chạy trước rồi lại chạy tiếp — xem cảnh báo `PADDING_MISMATCH` trong log, khuyên xoá `Translate/` và chạy lại sau khi `Raw/` đã đủ |
+| Audio bị lỗi/ngắt giữa chừng | Chạy lại `AudioGenerator.py` — các chunk đã tạo hợp lệ sẽ tự bỏ qua, chỉ tạo tiếp phần còn thiếu |
+| GUI treo khi Start nhiều lần liên tiếp | Xem lưu ý ở mục [GUI](#-cách-dùng-nhanh-nhất--gui) — hiện đóng/mở lại `gui.py`/`gui.exe` là workaround tạm thời |
