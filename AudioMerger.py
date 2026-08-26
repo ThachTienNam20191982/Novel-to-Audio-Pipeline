@@ -6,6 +6,13 @@ import json
 from datetime import datetime
 import config
 
+# Auto-detect ffmpeg/ffprobe trong bin/ (nếu có, đặt cùng cấp với file .py này)
+# — giống hệt cách AudioGenerator.py đang làm. Chèn lên ĐẦU PATH nên nếu vừa
+# có bin/ vừa có ffmpeg cài hệ thống thì bản trong bin/ được ưu tiên dùng.
+_BIN_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bin")
+if os.path.isdir(_BIN_DIR):
+    os.environ["PATH"] = _BIN_DIR + os.pathsep + os.environ["PATH"]
+
 # =============================================================================
 # CONFIG
 # Giá trị nằm trong config.py, mục "AudioMerger.py — CONFIG"
