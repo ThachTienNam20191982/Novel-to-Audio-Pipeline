@@ -8,6 +8,7 @@ from queue import Queue
 from urllib.parse import urlparse
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
+import undetected_chromedriver as uc
 import config
 
 
@@ -169,11 +170,199 @@ def print_progress(done, total):
 # ===== SELENIUM SETUP =========================================================
 # ==============================================================================
 
+# undetected-chromedriver cần patch driver lúc khởi tạo — nếu nhiều thread
+# cùng patch một lúc (lần chạy đầu, chưa có bản patch cache sẵn) dễ đụng file,
+# nên khóa lại đoạn TẠO driver cho chạy tuần tự. Việc mở trang/scroll/in PDF
+# sau đó vẫn chạy song song bình thường như cũ, không bị ảnh hưởng.
+_driver_create_lock = threading.Lock()
+
+
+def get_local_chrome_version():
+    """Tự dò version Chrome ĐANG CÀI trên máy, để ép undetected-chromedriver
+    tải đúng bản chromedriver khớp version đó.
+
+    Lý do cần hàm này: nếu không truyền version_main, undetected-chromedriver
+    có thể tải nhầm bản chromedriver mới hơn Chrome thật đang cài (VD: Chrome
+    tự update chậm hơn, máy đang ở bản 151 nhưng UC lại tải bản hỗ trợ 152),
+    gây lỗi ngay lúc khởi tạo:
+        "This version of ChromeDriver only supports Chrome version 152
+         Current browser version is 151.0.7922.174"
+    Dò lại đúng version máy đang có mỗi lần chạy giúp tránh lỗi này vĩnh
+    viễn, kể cả sau này Chrome tự cập nhật lên bản khác.
+    """
+    # Cách 1: đọc thẳng registry (Windows) — không cần biết đường dẫn cài Chrome
+    try:
+        import winreg
+        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Google\Chrome\BLBeacon")
+        version, _ = winreg.QueryValueEx(key, "version")
+        return int(version.split(".")[0])
+    except Exception:
+        pass
+
+    # Cách 2: gọi chrome.exe --version ở vài đường dẫn cài đặt phổ biến
+    try:
+        import re
+        import subprocess
+        candidates = [
+            r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+            r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+            os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe"),
+        ]
+        for path in candidates:
+            if os.path.exists(path):
+                out = subprocess.check_output([path, "--version"], text=True)
+                match = re.search(r"(\d+)\.", out)
+                if match:
+                    return int(match.group(1))
+    except Exception:
+        pass
+
+    return None  # không dò được — để undetected-chromedriver tự lo (có thể lệch)
+
+
+# Trang truyện dùng thư viện JS "disable-devtool" (theajack) để phát hiện có
+# công cụ debug/CDP đang gắn vào trang: gọi console.log/table/... với dữ liệu
+# "gài bẫy" (getter có side-effect, hoặc dữ liệu nặng để đo thời gian xử lý),
+# rồi kiểm tra NGAY SAU ĐÓ (đồng bộ) xem bẫy có bị kích hoạt / bị chậm bất
+# thường không. Selenium/CDP luôn cần bật Runtime domain để execute_script
+# hoạt động — không cách nào tránh nếu còn dùng execute_script — nên các phép
+# đo "ngay sau đó" này luôn thấy dấu hiệu bất thường và site sẽ tự điều
+# hướng lùi lại (window.history.back()) làm mất nội dung đang đọc.
+#
+# Cách vá: hoãn TOÀN BỘ lệnh console.* ra sau 1 tick (setTimeout 0) — mọi
+# phép kiểm tra "ngay lập tức" của detector sẽ luôn thấy console.log trả về
+# gần như tức thì / bẫy chưa kịp kích hoạt, trong khi log thật vẫn được gọi
+# (chỉ trễ chút xíu) nên driver vẫn đọc log bình thường nếu cần. Vá kèm 2 lớp
+# phòng hờ: tự tắt qua window.DisableDevtool.isSuspend nếu site có lộ biến
+# này ra global, và vô hiệu hoá window.history.back() (phương án cuối mà
+# thư viện dùng để "đá" tab) để dù có lọt detector nào khác cũng không mất
+# nội dung đang đọc.
+ANTI_DEVTOOL_DETECT_JS = """
+(function () {
+    var methods = ['log', 'info', 'warn', 'error', 'debug', 'table', 'dir',
+                    'trace', 'group', 'groupCollapsed', 'groupEnd'];
+    methods.forEach(function (m) {
+        var original = console[m];
+        if (typeof original === 'function') {
+            console[m] = function () {
+                var args = arguments;
+                setTimeout(function () {
+                    try { original.apply(console, args); } catch (e) {}
+                }, 0);
+            };
+        }
+    });
+
+    try {
+        var _dd;
+        Object.defineProperty(window, 'DisableDevtool', {
+            configurable: true,
+            get: function () { return _dd; },
+            set: function (v) {
+                _dd = v;
+                try { if (v) { v.isSuspend = true; } } catch (e) {}
+            }
+        });
+    } catch (e) {}
+
+    try {
+        window.history.back = function () {};
+    } catch (e) {}
+})();
+"""
+
+
 def create_driver():
-    options = Options()
+    options = uc.ChromeOptions()
     options.add_argument("--kiosk-printing")
-    options.add_argument("--disable-blink-features=AutomationControlled")
-    return webdriver.Chrome(options=options)
+    options.add_argument("--lang=vi-VN")
+    chrome_version = get_local_chrome_version()
+    with _driver_create_lock:
+        # use_subprocess=True bắt buộc phải có khi tạo driver trong thread
+        # phụ (không phải main thread) — mặc định UC cố đăng ký signal
+        # handler, mà Python chỉ cho phép làm điều đó ở main thread, nếu
+        # không sẽ crash với lỗi "signal only works in main thread".
+        # version_main=chrome_version: ép tải chromedriver đúng khớp bản
+        # Chrome đang cài trên máy (xem get_local_chrome_version() ở trên).
+        driver = uc.Chrome(options=options, use_subprocess=True, version_main=chrome_version)
+
+    # Tiêm script chống disable-devtool vào MỌI trang mới trong suốt phiên
+    # làm việc của driver này (addScriptToEvaluateOnNewDocument chạy trước
+    # cả script của chính trang, trên mọi lần điều hướng).
+    try:
+        driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
+            "source": ANTI_DEVTOOL_DETECT_JS
+        })
+    except Exception:
+        pass
+
+    # Một vài trường hợp UC mở thêm 1 cửa sổ/tab thừa ngay lúc khởi tạo —
+    # dọn sạch, chỉ giữ đúng 1 cửa sổ trước khi bắt đầu điều hướng, để driver
+    # không bị "lạc" sang cửa sổ trống thay vì cửa sổ có nội dung thật.
+    handles = driver.window_handles
+    if len(handles) > 1:
+        for h in handles[1:]:
+            try:
+                driver.switch_to.window(h)
+                driver.close()
+            except Exception:
+                pass
+        driver.switch_to.window(handles[0])
+
+    return driver
+
+
+def safe_quit(driver):
+    """Đóng driver an toàn — undetected-chromedriver đôi khi ném lỗi vô hại lúc quit()."""
+    try:
+        driver.quit()
+    except Exception:
+        pass
+
+
+def goto(driver, url):
+    """Thay cho driver.get(url) + time.sleep(LOAD_WAIT_TIME) gọi thẳng.
+
+    Vấn đề thực tế gặp phải: trang vẫn load được nội dung thật (nhìn thấy
+    bằng mắt), nhưng driver lại bị "lạc" sang một cửa sổ/tab khác đang trống
+    (chrome://new-tab-page/...) — có thể do UC hoặc do trang tự mở thêm
+    tab/cửa sổ. Vì chrome://... là URL nội bộ trình duyệt, trang web KHÔNG
+    thể tự điều hướng tới đó bằng JS, nên gần như chắc chắn đây là vấn đề
+    driver đang trỏ sai cửa sổ chứ không phải nội dung bị site xoá thật.
+
+    Hàm này sau khi load sẽ rà qua toàn bộ cửa sổ đang mở, tìm đúng cửa sổ
+    có URL khớp domain của trang đích, chuyển driver sang đó, rồi đóng bớt
+    các cửa sổ thừa còn lại.
+    """
+    domain = urlparse(url).netloc
+
+    driver.get(url)
+    time.sleep(LOAD_WAIT_TIME)
+
+    handles = driver.window_handles
+    target = None
+
+    if len(handles) > 1 or domain not in driver.current_url:
+        for h in handles:
+            driver.switch_to.window(h)
+            if domain in driver.current_url:
+                target = h
+                break
+
+        if target is None:
+            # Không cửa sổ nào khớp domain — quay về cửa sổ đầu tiên, ít
+            # nhất các bước sau vẫn có gì đó để đọc (và để log/báo lỗi).
+            target = handles[0]
+            driver.switch_to.window(target)
+
+        for h in handles:
+            if h != target:
+                try:
+                    driver.switch_to.window(h)
+                    driver.close()
+                except Exception:
+                    pass
+        driver.switch_to.window(target)
 
 
 # ==============================================================================
@@ -603,7 +792,7 @@ def save_pdf(driver, filename):
 # Các keyword tìm nút "Chương sau" — thêm vào nếu gặp site dùng chữ khác
 NEXT_CHAPTER_KEYWORDS = [
     "chương sau", "chương tiếp", "next chapter", "tiếp theo",
-    "trang sau", "next", "»", "→", ">>"
+    "trang sau", "next", "»", "→", "Tiếp", ">>"
 ]
 
 
@@ -861,8 +1050,7 @@ def phase1_collect_urls():
     try:
         # Nếu resume, load trang cuối để tìm nút tiếp theo từ đó
         if current_url:
-            driver.get(current_url)
-            time.sleep(LOAD_WAIT_TIME)
+            goto(driver, current_url)
             next_url = find_next_chapter_url(driver)
             if not next_url or next_url in url_set:
                 print("[Phase 1] Đã đến chương cuối (resume check). Không cần thu thập thêm.")
@@ -878,8 +1066,7 @@ def phase1_collect_urls():
                 mark_prepare_done()
                 break
 
-            driver.get(current_url)
-            time.sleep(LOAD_WAIT_TIME)
+            goto(driver, current_url)
 
             if next_index < START_CHAPTER:
                 print(f"\r[Phase 1] Bỏ qua chương {next_index} (< START_CHAPTER={START_CHAPTER})", end="", flush=True)
@@ -915,7 +1102,7 @@ def phase1_collect_urls():
             current_url = next_url
 
     finally:
-        driver.quit()
+        safe_quit(driver)
 
     return chapters
 
@@ -947,8 +1134,7 @@ def worker(queue, completed_set, total, counter):
 
         for attempt in range(1, MAX_RETRY + 1):
             try:
-                driver.get(url)
-                time.sleep(LOAD_WAIT_TIME)
+                goto(driver, url)
 
                 scroll_full_page(driver)
                 run_ad_removal(driver, domain)
@@ -971,7 +1157,7 @@ def worker(queue, completed_set, total, counter):
 
         queue.task_done()
 
-    driver.quit()
+    safe_quit(driver)
 
 
 # ==============================================================================
