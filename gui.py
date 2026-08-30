@@ -362,6 +362,12 @@ def get_keyword_file_path():
     return os.path.join(config.LOG_DIR, "TextCleaner_KeyWord.log")
 
 
+def get_rawdl_prepare_log_path():
+    """Đường dẫn RawDownloader_Prepare.log theo đúng LOG_DIR của truyện hiện tại.
+    File này chỉ được tạo khi RAWDL_CRAWL_MODE = "navigate" (phase 1 thu thập URL)."""
+    return os.path.join(config.LOG_DIR, "RawDownloader_Prepare.log")
+
+
 def read_keyword_sections():
     """Đọc TextCleaner_KeyWord.log hiện có. Trả về (sections, ui_junk_numbers)
     — sections là dict 4 list (delete/keep/ui_junk_words/suspected), GIỮ
@@ -790,6 +796,7 @@ class ScriptTab(ttk.Frame):
         self.proc = None
         self.reader_thread = None
         self.log_queue = queue.Queue()
+        self._prepare_log_tick = 0   # đếm vòng poll để tự tải lại Prepare log theo chu kỳ (chỉ tab RawDowloader)
         self._build_ui()
         self._poll_queue()
 
@@ -839,6 +846,11 @@ class ScriptTab(ttk.Frame):
             self._build_keyword_editor()
             self._build_suspected_and_log_pane()
             self._load_keyword_editor()
+        elif self.script_filename == "RawDowloader.py":
+            # Prepare log (trái) + Log chạy (phải) chia đôi, kéo được — xem tiến độ
+            # thu thập URL (chế độ navigate) và gỡ #DONE để thu thập tiếp khi cần.
+            self._build_prepare_log_and_log_pane()
+            self._load_prepare_log()
         else:
             log_frame = ttk.Frame(self)
             log_frame.pack(fill="both", expand=True, padx=8, pady=(0, 8))
@@ -885,6 +897,96 @@ class ScriptTab(ttk.Frame):
         right = ttk.Frame(pane)
         self._build_log_widget(right)
         pane.add(right, weight=1)
+
+    def _build_prepare_log_and_log_pane(self):
+        """RawDowloader: Prepare log (trái) + Log chạy (phải) trong 1 PanedWindow
+        ngang — kéo được để đổi tỉ lệ, cả 2 bên cùng chiếm hết chiều cao còn lại."""
+        pane = ttk.PanedWindow(self, orient="horizontal")
+        pane.pack(fill="both", expand=True, padx=8, pady=(0, 8))
+
+        left = ttk.Frame(pane)
+        left_toolbar = ttk.Frame(left)
+        left_toolbar.pack(fill="x", padx=4, pady=(4, 2))
+        ttk.Label(left_toolbar, text="RawDownloader_Prepare.log", font=("", 9, "bold")).pack(side="left")
+        ttk.Button(left_toolbar, text="🔄 Tải lại", command=self._load_prepare_log).pack(side="left", padx=(8, 0))
+        ttk.Button(
+            left_toolbar, text="🔓 Thu thập tiếp (gỡ #DONE)", command=self._remove_prepare_done_marker
+        ).pack(side="left", padx=(6, 0))
+        self.prepare_status_var = tk.StringVar(value="")
+        ttk.Label(left_toolbar, textvariable=self.prepare_status_var, foreground="#2a7d2a").pack(side="left", padx=8)
+
+        prepare_row = ttk.Frame(left)
+        prepare_row.pack(fill="both", expand=True, padx=(4, 0), pady=(0, 4))
+        self.prepare_log_text = tk.Text(prepare_row, font=("Consolas", 9), wrap="word", state="disabled")
+        prepare_scroll = ttk.Scrollbar(prepare_row, orient="vertical", command=self.prepare_log_text.yview)
+        self.prepare_log_text.configure(yscrollcommand=prepare_scroll.set)
+        self.prepare_log_text.pack(side="left", fill="both", expand=True)
+        prepare_scroll.pack(side="right", fill="y")
+        pane.add(left, weight=1)
+
+        right = ttk.Frame(pane)
+        self._build_log_widget(right)
+        pane.add(right, weight=1)
+
+    def _load_prepare_log(self):
+        """Đọc lại RawDownloader_Prepare.log của truyện hiện tại vào ô xem bên trái."""
+        path = get_rawdl_prepare_log_path()
+        self.prepare_log_text.config(state="normal")
+        self.prepare_log_text.delete("1.0", "end")
+        try:
+            if os.path.isfile(path):
+                with open(path, "r", encoding="utf-8") as f:
+                    content = f.read()
+                self.prepare_log_text.insert("1.0", content if content.strip() else "(File rỗng)")
+            else:
+                self.prepare_log_text.insert(
+                    "1.0",
+                    "(Chưa có RawDownloader_Prepare.log cho truyện này — file này chỉ được tạo "
+                    "khi RAWDL_CRAWL_MODE = \"navigate\" và đã chạy RawDowloader ít nhất 1 lần.)",
+                )
+        except Exception as exc:
+            self.prepare_log_text.insert("1.0", f"(Lỗi đọc file: {exc})")
+        self.prepare_log_text.config(state="disabled")
+
+    def _remove_prepare_done_marker(self):
+        """Gỡ dòng '#DONE' ở cuối RawDownloader_Prepare.log (nếu có) để lần chạy
+        sau RawDowloader biết là thu thập URL CHƯA xong và tiếp tục thay vì dừng
+        ngay — dùng khi trước đó chủ động dừng sớm (vd chỉ tải thử vài chương)
+        khiến file bị đánh dấu DONE sớm."""
+        path = get_rawdl_prepare_log_path()
+        if not os.path.isfile(path):
+            messagebox.showinfo("Không có file", "Chưa có RawDownloader_Prepare.log cho truyện này.", parent=self)
+            return
+
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+        except Exception as exc:
+            messagebox.showerror("Lỗi đọc file", str(exc), parent=self)
+            return
+
+        idx = len(lines) - 1
+        while idx >= 0 and lines[idx].strip() == "":
+            idx -= 1
+
+        if idx < 0 or lines[idx].strip() != "#DONE":
+            messagebox.showinfo(
+                "Không tìm thấy #DONE",
+                "Dòng cuối cùng trong RawDownloader_Prepare.log không phải '#DONE' — "
+                "không xoá gì để tránh mất nhầm URL đã thu thập được.",
+                parent=self,
+            )
+            return
+
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                f.writelines(lines[:idx])
+        except Exception as exc:
+            messagebox.showerror("Lỗi ghi file", str(exc), parent=self)
+            return
+
+        self.prepare_status_var.set("✅ Đã gỡ #DONE lúc " + datetime.now().strftime("%H:%M:%S"))
+        self._load_prepare_log()
 
     def _build_keyword_editor(self):
         outer = ttk.LabelFrame(self, text="🔑 Keyword (TextCleaner_KeyWord.log) — theo truyện hiện tại")
@@ -1053,6 +1155,13 @@ class ScriptTab(ttk.Frame):
                     self._append_log(item)
         except queue.Empty:
             pass
+
+        if self.script_filename == "RawDowloader.py" and self.proc is not None and hasattr(self, "_load_prepare_log"):
+            self._prepare_log_tick += 1
+            if self._prepare_log_tick >= 30:  # ~3 giây (30 vòng x 100ms) — đủ để thấy URL mới mà không đọc file liên tục
+                self._prepare_log_tick = 0
+                self._load_prepare_log()
+
         self.after(100, self._poll_queue)
 
     def _on_finished(self):
@@ -1074,6 +1183,8 @@ class ScriptTab(ttk.Frame):
         self.status_var.set("Đã dừng")
         if self.script_filename == "TextCleaner.py" and hasattr(self, "_load_keyword_editor"):
             self._load_keyword_editor()
+        if self.script_filename == "RawDowloader.py" and hasattr(self, "_load_prepare_log"):
+            self._load_prepare_log()
 
     def stop(self):
         if self.proc is None:
@@ -1191,6 +1302,8 @@ class App(tk.Tk):
         for tab in self.script_tabs:
             if hasattr(tab, "_load_keyword_editor"):
                 tab._load_keyword_editor()
+            if hasattr(tab, "_load_prepare_log"):
+                tab._load_prepare_log()
 
     def _on_close(self):
         running = [t for t in self.script_tabs if t.is_running()]
