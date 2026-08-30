@@ -6,8 +6,6 @@ import logging
 import threading
 from queue import Queue
 from urllib.parse import urlparse
-from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
 import undetected_chromedriver as uc
 import config
 
