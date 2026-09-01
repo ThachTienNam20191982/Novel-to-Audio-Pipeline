@@ -456,6 +456,80 @@ def format_chapter_list(numbers):
     return ", ".join(parts)
 
 
+# =============================================================================
+# ===== XOÁ N DÒNG ĐẦU MỖI CHƯƠNG (TitleDelete.py — thư mục Cleaned) ==========
+# =============================================================================
+# Khác với TITLEDEL_JUNK_PATTERNS (regex trong TitleDelete.py — tự idempotent
+# vì pattern đã xoá thì lần sau re.sub không khớp nữa, nên bấm Start bao
+# nhiêu lần cũng an toàn), xoá N dòng đầu theo VỊ TRÍ thì KHÔNG idempotent —
+# chạy 2 lần sẽ ăn lẹm thêm N dòng nội dung thật. Vì vậy đây là 1 thao tác
+# CHỦ ĐỘNG bấm trong GUI khi cần, tách hẳn khỏi vòng chạy tự động của
+# TitleDelete.py — KHÔNG cần sửa gì trong TitleDelete.py để có tính năng này.
+# KHÔNG tự backup: ghi đè trực tiếp — cần khôi phục bản gốc thì chạy lại
+# TextCleaner.py.
+
+def get_cleaned_dir_path():
+    """Đường dẫn thư mục Cleaned của truyện hiện tại — cùng quy ước dùng
+    thẳng config.CLEANED_DIR như get_raw_dir_path() dùng config.RAW_DIR."""
+    return config.CLEANED_DIR
+
+
+def list_cleaned_txt_files():
+    """Danh sách file .txt trong thư mục Cleaned của truyện hiện tại, sắp xếp
+    theo số chương nếu tên file có chứa số (vd Chuong_12.txt) — file không có
+    số trong tên xếp sau cùng, theo alphabet."""
+    folder = get_cleaned_dir_path()
+    if not os.path.isdir(folder):
+        return []
+    names = [f for f in os.listdir(folder) if f.endswith(".txt")]
+
+    def sort_key(name):
+        m = re.search(r"(\d+)", name)
+        return (0, int(m.group(1))) if m else (1, name)
+
+    return sorted(names, key=sort_key)
+
+
+def preview_strip_first_lines(n_lines, sample_count=1):
+    """Xem trước — KHÔNG ghi gì xuống đĩa. Trả về tối đa `sample_count` tuple
+    (filename, [các dòng sẽ bị xoá], dòng_đầu_còn_lại_sau_khi_xoá) cho những
+    file .txt ĐẦU TIÊN (theo thứ tự số chương) trong thư mục Cleaned."""
+    folder = get_cleaned_dir_path()
+    samples = []
+    for name in list_cleaned_txt_files()[:sample_count]:
+        path = os.path.join(folder, name)
+        with open(path, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+        removed = [ln.rstrip("\n") for ln in lines[:n_lines]]
+        remaining_first = lines[n_lines].rstrip("\n") if len(lines) > n_lines else "(hết file)"
+        samples.append((name, removed, remaining_first))
+    return samples
+
+
+def strip_first_lines_from_cleaned(n_lines):
+    """Xoá `n_lines` dòng đầu tiên của MỌI file .txt trong thư mục Cleaned của
+    truyện hiện tại — ghi đè trực tiếp, KHÔNG backup. File có số dòng <=
+    n_lines bị BỎ QUA (không xoá trắng cả file) và báo lại riêng.
+
+    Trả về (processed, skipped_too_short):
+      - processed: list filename đã xoá dòng thành công
+      - skipped_too_short: list filename có <= n_lines dòng, bị bỏ qua
+    """
+    folder = get_cleaned_dir_path()
+    processed, skipped_too_short = [], []
+    for name in list_cleaned_txt_files():
+        path = os.path.join(folder, name)
+        with open(path, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+        if len(lines) <= n_lines:
+            skipped_too_short.append(name)
+            continue
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("".join(lines[n_lines:]))
+        processed.append(name)
+    return processed, skipped_too_short
+
+
 def _parse_keyword_file(path):
     """Đọc 1 file định dạng TextCleaner_KeyWord.log tại `path`. Trả về
     (sections, ui_junk_numbers), hoặc None nếu file không tồn tại. Tách
@@ -977,6 +1051,14 @@ class ScriptTab(ttk.Frame):
             self._build_prepare_log_and_log_pane()
             self._load_prepare_log()
             self._refresh_delete_chapters_info()
+        elif self.script_filename == "TitleDelete.py":
+            # Khu xoá N dòng đầu mỗi chương (trên cùng, thao tác chủ động khi
+            # cần — KHÔNG chạy tự động cùng Start) rồi tới log chạy
+            # TitleDelete.py bình thường, chiếm hết phần còn lại của tab.
+            self._build_titledel_strip_lines_panel()
+            log_frame = ttk.Frame(self)
+            log_frame.pack(fill="both", expand=True, padx=8, pady=(0, 8))
+            self._build_log_widget(log_frame)
         else:
             log_frame = ttk.Frame(self)
             log_frame.pack(fill="both", expand=True, padx=8, pady=(0, 8))
@@ -1157,6 +1239,85 @@ class ScriptTab(ttk.Frame):
             msg += f"   ⚠️ Không có file cho {len(missing)} chương: {format_chapter_list(missing)}"
         self.del_status_var.set(msg)
         self._refresh_delete_chapters_info()
+
+    def _build_titledel_strip_lines_panel(self):
+        """TitleDelete: khu xoá N dòng đầu mỗi file .txt trong thư mục Cleaned
+        — thao tác CHỦ ĐỘNG bấm khi cần, ghi đè trực tiếp KHÔNG backup (lý do
+        KHÔNG gộp vào TITLEDEL_JUNK_PATTERNS/Start: xem banner phía trên hàm
+        strip_first_lines_from_cleaned — xoá theo vị trí không idempotent như
+        regex). Đặt ở TRÊN CÙNG phần nội dung riêng của tab này, ngay dưới
+        thanh Start/Stop/Xoá log chung."""
+        outer = ttk.LabelFrame(self, text="🗑️ Xoá N dòng đầu mỗi chương (thư mục Cleaned)")
+        outer.pack(fill="x", padx=8, pady=(0, 8))
+
+        row = ttk.Frame(outer)
+        row.pack(fill="x", padx=6, pady=(6, 2))
+        ttk.Label(row, text="Số dòng xoá ở đầu mỗi file:").pack(side="left")
+        self.strip_lines_var = tk.StringVar()
+        ttk.Entry(row, textvariable=self.strip_lines_var, width=6).pack(side="left", padx=(4, 10))
+        ttk.Button(
+            row, text="Áp dụng cho toàn bộ Cleaned", command=self._apply_strip_lines
+        ).pack(side="left", padx=(0, 0))
+
+        warn_row = ttk.Frame(outer)
+        warn_row.pack(fill="x", padx=6, pady=(0, 6))
+        self.strip_lines_status_var = tk.StringVar(
+            value="⚠ Ghi đè trực tiếp TOÀN BỘ file .txt trong thư mục Cleaned, KHÔNG backup — "
+                  "cần khôi phục bản gốc thì chạy lại TextCleaner. Nên xem trước trước khi Áp dụng."
+        )
+        ttk.Label(
+            warn_row, textvariable=self.strip_lines_status_var, foreground="#a35a00", wraplength=780
+        ).pack(anchor="w")
+
+    def _apply_strip_lines(self):
+        n = self._parse_chapter_number(self.strip_lines_var.get())
+        if n is None:
+            messagebox.showerror(
+                "Số dòng không hợp lệ", "Vui lòng nhập số dòng hợp lệ (số nguyên dương).", parent=self
+            )
+            return
+
+        filenames = list_cleaned_txt_files()
+        if not filenames:
+            messagebox.showinfo(
+                "Không có file", "Thư mục Cleaned của truyện hiện tại chưa có file .txt nào.", parent=self
+            )
+            return
+
+        if not messagebox.askyesno(
+            "Xác nhận xoá",
+            f"Xoá {n} dòng đầu tiên của TOÀN BỘ {len(filenames)} file .txt trong thư mục Cleaned?\n\n"
+            f"Ghi đè trực tiếp, KHÔNG backup — cần khôi phục bản gốc thì chạy lại TextCleaner. "
+            f"Nên chắc chắn đã 👁️ Xem trước trước khi bấm Có.",
+            parent=self,
+        ):
+            return
+
+        processed, skipped = strip_first_lines_from_cleaned(n)
+        msg = (
+            f"✅ Đã xoá {n} dòng đầu của {len(processed)}/{len(filenames)} file  —  "
+            + datetime.now().strftime("%H:%M:%S")
+        )
+        if skipped:
+            msg += f"  —  bỏ qua {len(skipped)} file có ≤{n} dòng"
+        self.strip_lines_status_var.set(msg)
+
+        if skipped:
+            preview = ", ".join(skipped[:10])
+            if len(skipped) > 10:
+                preview += f", ... (+{len(skipped) - 10} file khác)"
+            messagebox.showwarning(
+                "Hoàn tất (có file bị bỏ qua)",
+                f"Đã xoá {n} dòng đầu của {len(processed)}/{len(filenames)} file trong Cleaned.\n\n"
+                f"⚠ Bỏ qua {len(skipped)} file có ≤{n} dòng (không đủ để xoá):\n{preview}",
+                parent=self,
+            )
+        else:
+            messagebox.showinfo(
+                "Hoàn tất",
+                f"Đã xoá {n} dòng đầu của {len(processed)}/{len(filenames)} file trong Cleaned.",
+                parent=self,
+            )
 
     def _build_prepare_log_and_log_pane(self):
         """RawDowloader: Prepare log (trái) + Log chạy (phải) trong 1 PanedWindow
