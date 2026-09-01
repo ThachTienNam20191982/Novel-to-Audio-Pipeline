@@ -18,6 +18,9 @@ for filename in os.listdir(FOLDER):
     for pattern in config.TITLEDEL_JUNK_PATTERNS:
         content = re.sub(pattern, '', content, count=1)
 
+    if content.startswith('\n'):
+        content = content.lstrip('\n')
+
     with open(path, "w", encoding="utf-8") as f:
         f.write(content)
 
