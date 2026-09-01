@@ -376,6 +376,86 @@ def get_rawdl_prepare_log_path():
     return os.path.join(config.LOG_DIR, "RawDownloader_Prepare.log")
 
 
+# =============================================================================
+# ===== XOÁ CHƯƠNG ĐÃ TẢI (RawDowloader.py) ===================================
+# =============================================================================
+# RawDowloader.py lưu mỗi chương thành 1 file "Chuong_<số>.pdf" trong
+# config.RAW_DIR (đúng biến SAVE_PATH bên trong RawDowloader.py). Hệ thống
+# resume của nó (xem load_completed() trong RawDowloader.py) chỉ coi 1
+# chương là "đã xong" khi file VỪA có trên đĩa VỪA có dòng SUCCESS/SKIP
+# EXISTING trong RawDownloader_log.log — nên chỉ cần xoá file khỏi đĩa là đủ
+# để lần chạy sau tự động tải lại đúng chương đó, KHÔNG cần sửa gì thêm
+# trong log hay Prepare log.
+
+RAWDL_CHAPTER_FILENAME_RE = re.compile(r"^Chuong_(\d+)\.pdf$", re.IGNORECASE)
+
+
+def get_raw_dir_path():
+    """Đường dẫn thư mục Raw của truyện hiện tại — config.RAW_DIR đã là
+    đường dẫn dùng thẳng được, cùng quy ước với config.LOG_DIR ở trên."""
+    return config.RAW_DIR
+
+
+def list_downloaded_chapter_numbers():
+    """Quét thư mục Raw, trả về danh sách số thứ tự chương đã có file
+    Chuong_<số>.pdf trên đĩa, sắp xếp tăng dần."""
+    raw_dir = get_raw_dir_path()
+    if not os.path.isdir(raw_dir):
+        return []
+    numbers = []
+    for name in os.listdir(raw_dir):
+        m = RAWDL_CHAPTER_FILENAME_RE.match(name)
+        if m:
+            numbers.append(int(m.group(1)))
+    return sorted(numbers)
+
+
+def delete_chapter_files(chapter_numbers):
+    """Xoá file Chuong_<số>.pdf cho từng số chương trong `chapter_numbers`
+    (dọn luôn raw_Chuong_<số>.pdf nếu sót lại do lần chạy trước bị dừng giữa
+    chừng lúc đang smart-crop — xem save_pdf() trong RawDowloader.py).
+
+    Trả về (deleted, missing):
+      - deleted: list số chương đã xoá được ít nhất 1 file
+      - missing: list số chương không có file nào trên đĩa để xoá
+    """
+    raw_dir = get_raw_dir_path()
+    deleted, missing = [], []
+    for n in chapter_numbers:
+        paths = (
+            os.path.join(raw_dir, f"Chuong_{n}.pdf"),
+            os.path.join(raw_dir, f"raw_Chuong_{n}.pdf"),
+        )
+        found = False
+        for path in paths:
+            if os.path.isfile(path):
+                os.remove(path)
+                found = True
+        (deleted if found else missing).append(n)
+    return deleted, missing
+
+
+def format_chapter_list(numbers):
+    """Định dạng gọn danh sách số chương kiểu '5-9, 12, 15-20' thay vì liệt
+    kê từng số. Quan trọng hơn cả gọn: hiển thị kiểu này LỘ RA lỗ hổng (chương
+    bị thiếu ở giữa, vd tải lỗi do bị chặn bot) — khác với chỉ hiện khoảng
+    min–max (vd "chương 1–25") dễ khiến tưởng nhầm là liền mạch dù thực ra
+    thiếu hẳn 11-19 ở giữa."""
+    if not numbers:
+        return ""
+    numbers = sorted(numbers)
+    parts = []
+    start = prev = numbers[0]
+    for n in numbers[1:]:
+        if n == prev + 1:
+            prev = n
+            continue
+        parts.append(str(start) if start == prev else f"{start}-{prev}")
+        start = prev = n
+    parts.append(str(start) if start == prev else f"{start}-{prev}")
+    return ", ".join(parts)
+
+
 def _parse_keyword_file(path):
     """Đọc 1 file định dạng TextCleaner_KeyWord.log tại `path`. Trả về
     (sections, ui_junk_numbers), hoặc None nếu file không tồn tại. Tách
@@ -890,10 +970,13 @@ class ScriptTab(ttk.Frame):
             self._build_suspected_and_log_pane()
             self._load_keyword_editor()
         elif self.script_filename == "RawDowloader.py":
-            # Prepare log (trái) + Log chạy (phải) chia đôi, kéo được — xem tiến độ
-            # thu thập URL (chế độ navigate) và gỡ #DONE để thu thập tiếp khi cần.
+            # Khu xoá chương (trên cùng), rồi tới Prepare log (trái) + Log chạy
+            # (phải) chia đôi, kéo được — xem tiến độ thu thập URL (chế độ
+            # navigate) và gỡ #DONE để thu thập tiếp khi cần.
+            self._build_rawdl_delete_panel()
             self._build_prepare_log_and_log_pane()
             self._load_prepare_log()
+            self._refresh_delete_chapters_info()
         else:
             log_frame = ttk.Frame(self)
             log_frame.pack(fill="both", expand=True, padx=8, pady=(0, 8))
@@ -940,6 +1023,140 @@ class ScriptTab(ttk.Frame):
         right = ttk.Frame(pane)
         self._build_log_widget(right)
         pane.add(right, weight=1)
+
+    def _build_rawdl_delete_panel(self):
+        """RawDowloader: khu xoá chương đã tải — đơn chương hoặc theo khoảng
+        từ chương x tới y. Đặt ở TRÊN CÙNG phần nội dung riêng của tab này,
+        ngay dưới thanh Start/Stop/Xoá log chung."""
+        outer = ttk.LabelFrame(self, text="🗑️ Xoá chương đã tải")
+        outer.pack(fill="x", padx=8, pady=(0, 8))
+
+        row = ttk.Frame(outer)
+        row.pack(fill="x", padx=6, pady=(6, 2))
+
+        ttk.Label(row, text="Xoá chương số:").pack(side="left")
+        self.del_single_var = tk.StringVar()
+        ttk.Entry(row, textvariable=self.del_single_var, width=8).pack(side="left", padx=(4, 4))
+        ttk.Button(row, text="🗑️ Xoá", command=self._delete_single_chapter).pack(side="left")
+
+        ttk.Separator(row, orient="vertical").pack(side="left", fill="y", padx=14)
+
+        ttk.Label(row, text="Xoá từ chương:").pack(side="left")
+        self.del_from_var = tk.StringVar()
+        ttk.Entry(row, textvariable=self.del_from_var, width=8).pack(side="left", padx=(4, 4))
+        ttk.Label(row, text="đến chương:").pack(side="left")
+        self.del_to_var = tk.StringVar()
+        ttk.Entry(row, textvariable=self.del_to_var, width=8).pack(side="left", padx=(4, 4))
+        ttk.Button(row, text="🗑️ Xoá khoảng", command=self._delete_range_chapters).pack(side="left")
+
+        ttk.Button(row, text="🔄", width=3, command=self._refresh_delete_chapters_info).pack(side="left", padx=(14, 0))
+
+        info_row = ttk.Frame(outer)
+        info_row.pack(fill="x", padx=6, pady=(0, 2))
+        self.del_info_var = tk.StringVar(value="")
+        ttk.Label(info_row, textvariable=self.del_info_var, foreground="#555", wraplength=760).pack(anchor="w")
+
+        status_row = ttk.Frame(outer)
+        status_row.pack(fill="x", padx=6, pady=(0, 6))
+        self.del_status_var = tk.StringVar(value="")
+        ttk.Label(status_row, textvariable=self.del_status_var, foreground="#2a7d2a", wraplength=760).pack(anchor="w")
+
+    def _refresh_delete_chapters_info(self):
+        """Cập nhật dòng '📊 Đang có N chương...' theo đúng thư mục Raw của
+        truyện hiện tại — liệt kê dạng gọn '1-10, 20-25' để LỘ RA lỗ hổng
+        (chương bị thiếu ở giữa, vd tải lỗi do bị chặn bot) thay vì chỉ hiện
+        khoảng min–max dễ gây hiểu lầm là liền mạch. Gọi lại mỗi khi: mở tab,
+        đổi truyện, xoá xong, RawDowloader chạy xong, hoặc định kỳ ~3s trong
+        lúc RawDowloader đang chạy (xem _poll_queue)."""
+        if not hasattr(self, "del_info_var"):
+            return  # tab này không phải RawDowloader, không có khu xoá chương
+        numbers = list_downloaded_chapter_numbers()
+        if numbers:
+            self.del_info_var.set(f"📊 Đang có {len(numbers)} chương đã tải: {format_chapter_list(numbers)}")
+        else:
+            self.del_info_var.set("📊 Chưa có chương nào được tải trên đĩa.")
+
+    @staticmethod
+    def _parse_chapter_number(raw):
+        raw = raw.strip()
+        if not raw.isdigit():
+            return None
+        n = int(raw)
+        return n if n >= 1 else None
+
+    def _delete_single_chapter(self):
+        n = self._parse_chapter_number(self.del_single_var.get())
+        if n is None:
+            messagebox.showerror(
+                "Số chương không hợp lệ", "Vui lòng nhập số chương hợp lệ (số nguyên dương).", parent=self
+            )
+            return
+
+        warn_running = (
+            "\n\n⚠ RawDowloader đang chạy — xoá lúc này có thể xung đột với tiến trình tải."
+            if self.is_running() else ""
+        )
+        if not messagebox.askyesno(
+            "Xác nhận xoá",
+            f"Xoá file đã tải của chương {n}?\n\n"
+            f"Chỉ xoá file trên đĩa, không sửa log — chạy lại RawDowloader sau đó sẽ tự "
+            f"tải lại chương này nếu vẫn nằm trong khoảng START/END_CHAPTER hiện tại."
+            f"{warn_running}",
+            parent=self,
+        ):
+            return
+
+        deleted, missing = delete_chapter_files([n])
+        if deleted:
+            self.del_status_var.set(f"✅ Đã xoá chương {n}  —  " + datetime.now().strftime("%H:%M:%S"))
+        else:
+            self.del_status_var.set(f"⚠️ Không có file của chương {n} trên đĩa")
+        self.del_single_var.set("")
+        self._refresh_delete_chapters_info()
+
+    def _delete_range_chapters(self):
+        start = self._parse_chapter_number(self.del_from_var.get())
+        end = self._parse_chapter_number(self.del_to_var.get())
+        if start is None or end is None:
+            messagebox.showerror(
+                "Khoảng không hợp lệ", "Vui lòng nhập đủ 2 số chương hợp lệ (số nguyên dương).", parent=self
+            )
+            return
+        if start > end:
+            start, end = end, start  # nhập ngược cũng tự hiểu đúng, đỡ phải sửa tay
+
+        chapter_range = list(range(start, end + 1))
+        if len(chapter_range) > 1000:
+            messagebox.showwarning(
+                "Khoảng quá lớn",
+                f"Khoảng {start}–{end} có tới {len(chapter_range)} chương, có vẻ không đúng ý bạn — "
+                "kiểm tra lại 2 số trước khi xoá.",
+                parent=self,
+            )
+            return
+        warn_running = (
+            "\n\n⚠ RawDowloader đang chạy — xoá lúc này có thể xung đột với tiến trình tải."
+            if self.is_running() else ""
+        )
+        if not messagebox.askyesno(
+            "Xác nhận xoá",
+            f"Xoá file đã tải của {len(chapter_range)} chương, từ chương {start} đến chương {end}?\n\n"
+            f"Chỉ xoá file trên đĩa, không sửa log — chạy lại RawDowloader sau đó sẽ tự tải lại "
+            f"các chương này nếu vẫn nằm trong khoảng START/END_CHAPTER hiện tại. Hành động xoá "
+            f"này không thể hoàn tác trực tiếp.{warn_running}",
+            parent=self,
+        ):
+            return
+
+        deleted, missing = delete_chapter_files(chapter_range)
+        msg = (
+            f"✅ Đã xoá {len(deleted)}/{len(chapter_range)} chương (từ {start} đến {end})  —  "
+            + datetime.now().strftime("%H:%M:%S")
+        )
+        if missing:
+            msg += f"   ⚠️ Không có file cho {len(missing)} chương: {format_chapter_list(missing)}"
+        self.del_status_var.set(msg)
+        self._refresh_delete_chapters_info()
 
     def _build_prepare_log_and_log_pane(self):
         """RawDowloader: Prepare log (trái) + Log chạy (phải) trong 1 PanedWindow
@@ -1292,6 +1509,9 @@ class ScriptTab(ttk.Frame):
                 # mất nội dung người dùng đang gõ dở.
                 if not self.prepare_log_text.edit_modified():
                     self._load_prepare_log()
+                # Cùng chu kỳ: cập nhật luôn số chương đã có trên đĩa (khu xoá
+                # chương) để thấy tiến độ tải ở Phase 2 mà không cần bấm 🔄 tay.
+                self._refresh_delete_chapters_info()
 
         self.after(100, self._poll_queue)
 
@@ -1317,6 +1537,7 @@ class ScriptTab(ttk.Frame):
         if self.script_filename == "RawDowloader.py" and hasattr(self, "_load_prepare_log"):
             if not self.prepare_log_text.edit_modified():
                 self._load_prepare_log()
+            self._refresh_delete_chapters_info()
 
     def stop(self):
         if self.proc is None:
@@ -1446,6 +1667,8 @@ class App(tk.Tk):
                 # tự tải lại đè mất nội dung người dùng đang gõ dở.
                 if not tab.prepare_log_text.edit_modified():
                     tab._load_prepare_log()
+                # Đổi truyện = đổi luôn thư mục Raw -> nạp lại số chương trên đĩa.
+                tab._refresh_delete_chapters_info()
 
     def _on_close(self):
         running = [t for t in self.script_tabs if t.is_running()]
