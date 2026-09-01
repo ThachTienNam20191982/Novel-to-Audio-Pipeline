@@ -362,26 +362,29 @@ def get_keyword_file_path():
     return os.path.join(config.LOG_DIR, "TextCleaner_KeyWord.log")
 
 
+def get_keyword_default_path():
+    """Đường dẫn file Keyword Default — DÙNG CHUNG cho mọi truyện, nằm cạnh
+    gui.py/config.py (KHÔNG nằm trong folder riêng của truyện nào). Truyện
+    nào chưa có TextCleaner_KeyWord.log riêng sẽ lấy nội dung khởi điểm từ
+    đây (xem read_keyword_sections)."""
+    return os.path.join(SCRIPT_DIR, "TextCleaner_KeyWord_Default.log")
+
+
 def get_rawdl_prepare_log_path():
     """Đường dẫn RawDownloader_Prepare.log theo đúng LOG_DIR của truyện hiện tại.
     File này chỉ được tạo khi RAWDL_CRAWL_MODE = "navigate" (phase 1 thu thập URL)."""
     return os.path.join(config.LOG_DIR, "RawDownloader_Prepare.log")
 
 
-def read_keyword_sections():
-    """Đọc TextCleaner_KeyWord.log hiện có. Trả về (sections, ui_junk_numbers)
-    — sections là dict 4 list (delete/keep/ui_junk_words/suspected), GIỮ
-    NGUYÊN chữ hoa-thường và thứ tự như trong file (không chuẩn hoá) để hiển
-    thị đúng những gì đang có. Nếu file chưa tồn tại (truyện mới, TextCleaner
-    chưa chạy lần nào), trả về mặc định giống hệt TextCleaner.py tự tạo."""
-    path = get_keyword_file_path()
+def _parse_keyword_file(path):
+    """Đọc 1 file định dạng TextCleaner_KeyWord.log tại `path`. Trả về
+    (sections, ui_junk_numbers), hoặc None nếu file không tồn tại. Tách
+    riêng để dùng chung cho cả file riêng-truyện lẫn file Default."""
+    if not os.path.exists(path):
+        return None
+
     sections = {"delete": [], "keep": [], "ui_junk_words": [], "suspected": []}
     ui_junk_numbers = True
-
-    if not os.path.exists(path):
-        sections["ui_junk_words"] = list(_DEFAULT_UI_JUNK_WORDS)
-        return sections, ui_junk_numbers
-
     section = None
     with open(path, "r", encoding="utf-8") as f:
         for raw_line in f:
@@ -395,8 +398,37 @@ def read_keyword_sections():
                 ui_junk_numbers = (line.lower() != "disabled")
             elif section in sections:
                 sections[section].append(line)
-
     return sections, ui_junk_numbers
+
+
+def read_keyword_sections():
+    """Đọc TextCleaner_KeyWord.log CỦA TRUYỆN HIỆN TẠI. Trả về
+    (sections, ui_junk_numbers, source) — sections là dict 4 list
+    (delete/keep/ui_junk_words/suspected), GIỮ NGUYÊN chữ hoa-thường và thứ
+    tự như trong file (không chuẩn hoá) để hiển thị đúng những gì đang có.
+
+    Thứ tự ưu tiên khi truyện CHƯA có file riêng (mới, hoặc TextCleaner chưa
+    chạy lần nào):
+      1) File Keyword Default dùng chung (get_keyword_default_path()) — nếu
+         đã có ai đó lưu Default từ trước.
+      2) Mặc định tối thiểu cứng trong code (_DEFAULT_UI_JUNK_WORDS) — nếu
+         Default cũng chưa từng được tạo.
+
+    `source` là "novel" / "default" / "builtin" — cho biết dữ liệu đang hiển
+    thị lấy từ đâu, để UI báo cho người dùng biết (xem _load_keyword_editor).
+    QUAN TRỌNG: trường hợp "default"/"builtin", hàm này KHÔNG ghi gì vào
+    folder của truyện cả — chỉ đọc tạm để hiển thị; phải chủ động bấm
+    💾 Lưu keyword thì mới thật sự tạo file riêng cho truyện đó."""
+    parsed = _parse_keyword_file(get_keyword_file_path())
+    if parsed is not None:
+        return parsed[0], parsed[1], "novel"
+
+    parsed_default = _parse_keyword_file(get_keyword_default_path())
+    if parsed_default is not None:
+        return parsed_default[0], parsed_default[1], "default"
+
+    sections = {"delete": [], "keep": [], "ui_junk_words": list(_DEFAULT_UI_JUNK_WORDS), "suspected": []}
+    return sections, True, "builtin"
 
 
 def _dedup_preserve_order(lines, case_insensitive=True):
@@ -410,16 +442,22 @@ def _dedup_preserve_order(lines, case_insensitive=True):
     return out
 
 
-def write_keyword_sections(delete_lines, keep_lines, ui_junk_words_lines, ui_junk_numbers, suspected_lines):
-    """Ghi lại TextCleaner_KeyWord.log theo đúng format TextCleaner.py dùng —
-    backup timestamp trước khi ghi đè, giống cơ chế của config.py."""
-    path = get_keyword_file_path()
+def write_keyword_sections(delete_lines, keep_lines, ui_junk_words_lines, ui_junk_numbers, suspected_lines, path=None):
+    """Ghi 1 file keyword theo đúng format TextCleaner.py dùng — backup
+    timestamp trước khi ghi đè, giống cơ chế của config.py.
+
+    Mặc định (path=None) ghi vào file riêng của TRUYỆN HIỆN TẠI. Truyền
+    path=get_keyword_default_path() để ghi vào file Default dùng chung cho
+    mọi truyện thay vì file riêng."""
+    if path is None:
+        path = get_keyword_file_path()
     os.makedirs(os.path.dirname(path), exist_ok=True)
 
     if os.path.exists(path):
         os.makedirs(BACKUP_DIR, exist_ok=True)
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        shutil.copy2(path, os.path.join(BACKUP_DIR, f"TextCleaner_KeyWord_{ts}.log.bak"))
+        base = os.path.splitext(os.path.basename(path))[0]
+        shutil.copy2(path, os.path.join(BACKUP_DIR, f"{base}_{ts}.log.bak"))
 
     with open(path, "w", encoding="utf-8") as f:
         f.write(KEYWORD_FILE_HEADER)
@@ -790,6 +828,11 @@ MAX_LOG_LINES = 4000
 
 
 class ScriptTab(ttk.Frame):
+    _PREPARE_LOG_MISSING_MSG = (
+        "(Chưa có RawDownloader_Prepare.log cho truyện này — file này chỉ được tạo "
+        "khi RAWDL_CRAWL_MODE = \"navigate\" và đã chạy RawDowloader ít nhất 1 lần.)"
+    )
+
     def __init__(self, parent, script_filename):
         super().__init__(parent)
         self.script_filename = script_filename
@@ -912,12 +955,15 @@ class ScriptTab(ttk.Frame):
         ttk.Button(
             left_toolbar, text="🔓 Thu thập tiếp (gỡ #DONE)", command=self._remove_prepare_done_marker
         ).pack(side="left", padx=(6, 0))
+        ttk.Button(left_toolbar, text="💾 Lưu", command=self._save_prepare_log).pack(side="left", padx=(6, 0))
         self.prepare_status_var = tk.StringVar(value="")
         ttk.Label(left_toolbar, textvariable=self.prepare_status_var, foreground="#2a7d2a").pack(side="left", padx=8)
 
         prepare_row = ttk.Frame(left)
         prepare_row.pack(fill="both", expand=True, padx=(4, 0), pady=(0, 4))
-        self.prepare_log_text = tk.Text(prepare_row, font=("Consolas", 9), wrap="word", state="disabled")
+        # Sửa trực tiếp được (không còn state="disabled") — sửa xong bấm
+        # 💾 Lưu để ghi đè vào RawDownloader_Prepare.log (tự backup trước).
+        self.prepare_log_text = tk.Text(prepare_row, font=("Consolas", 9), wrap="word")
         prepare_scroll = ttk.Scrollbar(prepare_row, orient="vertical", command=self.prepare_log_text.yview)
         self.prepare_log_text.configure(yscrollcommand=prepare_scroll.set)
         self.prepare_log_text.pack(side="left", fill="both", expand=True)
@@ -929,24 +975,62 @@ class ScriptTab(ttk.Frame):
         pane.add(right, weight=1)
 
     def _load_prepare_log(self):
-        """Đọc lại RawDownloader_Prepare.log của truyện hiện tại vào ô xem bên trái."""
+        """Đọc lại RawDownloader_Prepare.log của truyện hiện tại vào ô soạn
+        thảo bên trái (ô này sửa trực tiếp được — xem _save_prepare_log()).
+        Reset cờ "đã sửa" sau khi tải, để lần tự tải lại theo chu kỳ (lúc
+        RawDowloader đang chạy — xem _poll_queue) biết nội dung đang khớp
+        file, không có gì cần giữ lại."""
+        if not hasattr(self, "prepare_log_text"):
+            return  # tab này không phải RawDowloader, không có ô này để tải
         path = get_rawdl_prepare_log_path()
-        self.prepare_log_text.config(state="normal")
         self.prepare_log_text.delete("1.0", "end")
         try:
             if os.path.isfile(path):
                 with open(path, "r", encoding="utf-8") as f:
                     content = f.read()
-                self.prepare_log_text.insert("1.0", content if content.strip() else "(File rỗng)")
+                self.prepare_log_text.insert("1.0", content)
+                self._prepare_log_has_file = True
             else:
-                self.prepare_log_text.insert(
-                    "1.0",
-                    "(Chưa có RawDownloader_Prepare.log cho truyện này — file này chỉ được tạo "
-                    "khi RAWDL_CRAWL_MODE = \"navigate\" và đã chạy RawDowloader ít nhất 1 lần.)",
-                )
+                self.prepare_log_text.insert("1.0", self._PREPARE_LOG_MISSING_MSG)
+                self._prepare_log_has_file = False
         except Exception as exc:
             self.prepare_log_text.insert("1.0", f"(Lỗi đọc file: {exc})")
-        self.prepare_log_text.config(state="disabled")
+            self._prepare_log_has_file = False
+        self.prepare_log_text.edit_modified(False)
+
+    def _save_prepare_log(self):
+        """Ghi nội dung đang sửa trong ô bên trái đè lên RawDownloader_Prepare.log
+        — tự backup bản cũ trước khi ghi đè (giống cơ chế config.py/keyword)."""
+        path = get_rawdl_prepare_log_path()
+        content = self.prepare_log_text.get("1.0", "end-1c")
+
+        if not getattr(self, "_prepare_log_has_file", False) and content.strip() == self._PREPARE_LOG_MISSING_MSG.strip():
+            messagebox.showinfo(
+                "Chưa có gì để lưu",
+                "Chưa có RawDownloader_Prepare.log cho truyện này, và ô soạn thảo đang chỉ "
+                "hiện thông báo mặc định — chưa có nội dung thật để lưu.\n\n"
+                "Muốn tự tạo file: xoá thông báo này, gõ nội dung bạn muốn rồi bấm Lưu lại.",
+                parent=self,
+            )
+            return
+
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            if os.path.isfile(path):
+                backup_dir = os.path.join(BACKUP_DIR, "prepare_log")
+                os.makedirs(backup_dir, exist_ok=True)
+                ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                shutil.copy2(path, os.path.join(backup_dir, f"RawDownloader_Prepare_{ts}.log.bak"))
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(content)
+                if content and not content.endswith("\n"):
+                    f.write("\n")
+        except Exception as exc:
+            messagebox.showerror("Lỗi lưu file", str(exc), parent=self)
+            return
+
+        self.prepare_status_var.set("✅ Đã lưu lúc " + datetime.now().strftime("%H:%M:%S"))
+        self._load_prepare_log()
 
     def _remove_prepare_done_marker(self):
         """Gỡ dòng '#DONE' ở cuối RawDownloader_Prepare.log (nếu có) để lần chạy
@@ -1014,6 +1098,9 @@ class ScriptTab(ttk.Frame):
         btn_row.pack(fill="x", padx=6, pady=(4, 6))
         ttk.Button(btn_row, text="🔄 Tải lại", command=self._load_keyword_editor).pack(side="left")
         ttk.Button(btn_row, text="💾 Lưu keyword", command=self._save_keyword_editor).pack(side="left", padx=(6, 0))
+        ttk.Button(
+            btn_row, text="📋 Lưu làm Default", command=self._save_keyword_editor_as_default
+        ).pack(side="left", padx=(6, 0))
         self.kw_status_var = tk.StringVar(value="")
         ttk.Label(btn_row, textvariable=self.kw_status_var, foreground="#2a7d2a").pack(side="left", padx=10)
 
@@ -1041,8 +1128,10 @@ class ScriptTab(ttk.Frame):
         return [ln.strip() for ln in widget.get("1.0", "end").splitlines() if ln.strip()]
 
     def _load_keyword_editor(self):
+        if not hasattr(self, "kw_delete_text"):
+            return  # tab này không phải TextCleaner, không có UI keyword để tải
         try:
-            sections, ui_junk_numbers = read_keyword_sections()
+            sections, ui_junk_numbers, source = read_keyword_sections()
         except Exception as exc:
             messagebox.showerror("Lỗi đọc keyword", str(exc), parent=self)
             return
@@ -1051,7 +1140,18 @@ class ScriptTab(ttk.Frame):
         self._set_kw_text(self.kw_junk_text, sections["ui_junk_words"])
         self._set_kw_text(self.kw_suspected_text, sections["suspected"])
         self.kw_numbers_var.set(ui_junk_numbers)
-        self.kw_status_var.set("")
+        if source == "default":
+            self.kw_status_var.set(
+                "📋 Truyện này chưa có keyword riêng — đang hiện Keyword Default "
+                "dùng chung. Bấm 💾 Lưu keyword để áp dụng riêng cho truyện này."
+            )
+        elif source == "builtin":
+            self.kw_status_var.set(
+                "📋 Chưa có Keyword Default lẫn keyword riêng cho truyện này — "
+                "đang dùng mặc định tối thiểu có sẵn trong code."
+            )
+        else:
+            self.kw_status_var.set("")
 
     def _save_keyword_editor(self):
         try:
@@ -1070,6 +1170,34 @@ class ScriptTab(ttk.Frame):
         self.log_text.config(state="normal")
         self.log_text.delete("1.0", "end")
         self.log_text.config(state="disabled")
+
+    def _save_keyword_editor_as_default(self):
+        """Lưu nội dung đang sửa thành Keyword Default DÙNG CHUNG cho mọi
+        truyện mới sau này — KHÔNG đụng tới TextCleaner_KeyWord.log riêng của
+        truyện hiện tại (nút 💾 Lưu keyword vẫn là nút lưu riêng cho truyện
+        đang chọn, tách biệt hoàn toàn với nút này)."""
+        if not messagebox.askyesno(
+            "Lưu làm Keyword Default?",
+            "Ghi đè Keyword Default dùng CHUNG cho MỌI truyện mới sau này bằng "
+            "đúng nội dung đang sửa ở đây?\n\n"
+            "Không ảnh hưởng tới keyword riêng của truyện hiện tại hay bất kỳ "
+            "truyện nào khác đã từng bấm 💾 Lưu keyword trước đó.",
+            parent=self,
+        ):
+            return
+        try:
+            write_keyword_sections(
+                delete_lines=self._get_kw_lines(self.kw_delete_text),
+                keep_lines=self._get_kw_lines(self.kw_keep_text),
+                ui_junk_words_lines=self._get_kw_lines(self.kw_junk_text),
+                ui_junk_numbers=bool(self.kw_numbers_var.get()),
+                suspected_lines=self._get_kw_lines(self.kw_suspected_text),
+                path=get_keyword_default_path(),
+            )
+        except Exception as exc:
+            messagebox.showerror("Lỗi lưu Keyword Default", str(exc), parent=self)
+            return
+        self.kw_status_var.set("✅ Đã lưu làm Keyword Default lúc " + datetime.now().strftime("%H:%M:%S"))
 
     # ---------- Start / Stop ----------
 
@@ -1160,7 +1288,10 @@ class ScriptTab(ttk.Frame):
             self._prepare_log_tick += 1
             if self._prepare_log_tick >= 30:  # ~3 giây (30 vòng x 100ms) — đủ để thấy URL mới mà không đọc file liên tục
                 self._prepare_log_tick = 0
-                self._load_prepare_log()
+                # Bỏ qua nếu đang có sửa tay chưa lưu — tránh tự tải lại đè
+                # mất nội dung người dùng đang gõ dở.
+                if not self.prepare_log_text.edit_modified():
+                    self._load_prepare_log()
 
         self.after(100, self._poll_queue)
 
@@ -1184,7 +1315,8 @@ class ScriptTab(ttk.Frame):
         if self.script_filename == "TextCleaner.py" and hasattr(self, "_load_keyword_editor"):
             self._load_keyword_editor()
         if self.script_filename == "RawDowloader.py" and hasattr(self, "_load_prepare_log"):
-            self._load_prepare_log()
+            if not self.prepare_log_text.edit_modified():
+                self._load_prepare_log()
 
     def stop(self):
         if self.proc is None:
@@ -1300,10 +1432,20 @@ class App(tk.Tk):
         self._refresh_status_bar()
         self.title(f"Novel-to-Audio Pipeline — {getattr(config, 'NOVEL_NAME', '')}")
         for tab in self.script_tabs:
-            if hasattr(tab, "_load_keyword_editor"):
+            # LƯU Ý: hasattr(tab, "_load_keyword_editor"/"_load_prepare_log")
+            # LUÔN True vì đó là method định nghĩa trên class ScriptTab, tồn
+            # tại trên MỌI tab bất kể tab đó có thật sự dựng UI tương ứng hay
+            # không — kiểm tra kiểu đó là sai (đây chính là nguyên nhân lỗi
+            # AttributeError: 'ScriptTab' object has no attribute
+            # 'kw_delete_text' hay gặp). Phải so theo script_filename, đúng
+            # như cách _on_finished() đã làm.
+            if tab.script_filename == "TextCleaner.py":
                 tab._load_keyword_editor()
-            if hasattr(tab, "_load_prepare_log"):
-                tab._load_prepare_log()
+            if tab.script_filename == "RawDowloader.py":
+                # Bỏ qua nếu đang có sửa tay chưa lưu ở ô Prepare log — tránh
+                # tự tải lại đè mất nội dung người dùng đang gõ dở.
+                if not tab.prepare_log_text.edit_modified():
+                    tab._load_prepare_log()
 
     def _on_close(self):
         running = [t for t in self.script_tabs if t.is_running()]
