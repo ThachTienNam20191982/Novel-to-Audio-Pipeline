@@ -504,7 +504,7 @@ def step_isolate_and_rebuild(driver):
         nhưng tỉ lệ link/text thấp — nội dung truyện ít link,
         nav/quảng cáo nhiều link. Hoạt động tốt với mọi site lạ.
     """
-    driver.execute_script(r"""
+    return driver.execute_script(r"""
         function scoreBlock(el) {
             const text = (el.innerText || '').trim();
             const textLen = text.length;
@@ -545,7 +545,67 @@ def step_isolate_and_rebuild(driver):
             return best;
         }
 
+        function escapeHtml(s) {
+            return String(s || '')
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;');
+        }
+
+        // Tìm tiêu đề chương ĐẦY ĐỦ ("Chương 1: Tên chương").
+        // Lỗi cũ: <title> của trang và các phần tử "lá" thường chỉ chứa mỗi
+        // "Chương 1", còn phần tên chương nằm chung trong 1 thẻ cha (h1/h2/a...)
+        // có nhiều <span> con -> bị bỏ sót. Ở đây quét MỌI phần tử (kể cả phần
+        // tử có con), lấy innerText thật (đúng thứ hiển thị trên màn hình), chỉ
+        // nhận text bắt đầu bằng "Chương <số>", rồi chọn ứng viên DÀI NHẤT.
+        function findChapterTitleStrict() {
+            const START_RE = /^[\[\(\s]*(chương|chuong|chapter)\s*(\d+)/i;
+            const NAV_RE   = /chương\s*(trước|sau|tiếp)|chuong\s*(truoc|sau|tiep)|(prev(ious)?|next)\s*chapter|mục\s*lục/i;
+            const SKIP     = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT', 'OPTION', 'SELECT', 'TITLE', 'HEAD', 'META', 'LINK']);
+
+            // Số chương trong URL (vd .../chuong-1/ -> 1) để loại các mục
+            // "Chương 2, Chương 3..." nằm trong menu/mục lục cùng trang.
+            const um = window.location.pathname.match(/(?:chuong|chapter|chap)[-_]?(\d+)/i);
+            const urlNum = um ? parseInt(um[1], 10) : null;
+
+            function collect(useUrlNum) {
+                const found = [];
+                document.querySelectorAll('body *').forEach(el => {
+                    if (SKIP.has(el.tagName)) return;
+                    if ((el.textContent || '').length > 300) return;  // lọc rẻ trước khi gọi innerText
+                    let t = (el.innerText || '').trim();
+                    if (t.length < 4) return;
+                    if (/\n/.test(t)) {
+                        // Thẻ heading được phép xuống dòng (số chương / tên chương
+                        // ở 2 dòng); thẻ khác nhiều dòng thường là container -> bỏ.
+                        if (!/^H[1-4]$/.test(el.tagName)) return;
+                        t = t.split(/\n+/).map(s => s.trim()).filter(Boolean).join(' ');
+                    }
+                    t = t.replace(/^\[+\s*|\s*\]+$/g, '').replace(/\s+/g, ' ').trim();
+                    if (t.length < 4 || t.length > 150) return;
+                    const m = t.match(START_RE);
+                    if (!m) return;
+                    if (NAV_RE.test(t)) return;
+                    if (useUrlNum && urlNum !== null && parseInt(m[2], 10) !== urlNum) return;
+                    found.push(t);
+                });
+                return found;
+            }
+
+            let list = collect(true);
+            if (!list.length) list = collect(false);
+            if (!list.length) return null;
+            list.sort((a, b) => b.length - a.length);
+            return list[0];
+        }
+
         function findTitle(mainEl) {
+            // Thử cách quét đầy đủ trước; chỉ chấp nhận nếu kết quả có nhiều hơn
+            // mỗi "Chương N" (tức có kèm tên chương). Nếu không thì chạy tiếp
+            // các cách cũ bên dưới.
+            const strict = findChapterTitleStrict();
+            if (strict && !/^[\[\(\s]*(chương|chuong|chapter)\s*\d+\s*$/i.test(strict)) return strict;
+
             // Bản trước dựa vào VỊ TRÍ heading (gần main content) vẫn có thể vớ
             // nhầm "Bookmarks" nếu main content được nhận diện là một khối RỘNG
             // (bao luôn cả mấy mục UI phía trên), hoặc nếu tiêu đề chương bị xé
@@ -644,13 +704,14 @@ def step_isolate_and_rebuild(driver):
                     </style>
                 </head>
                 <body>
-                    <h1>${title}</h1>
+                    <h1>${escapeHtml(title)}</h1>
                     ${html}
                 </body>
                 </html>
             `);
             document.close();
         }
+        return title;
     """)
 
 
@@ -684,7 +745,8 @@ def run_ad_removal(driver, domain):
 
     # Bước 5 chạy trước — đọc và rebuild DOM gốc
     if ADV_ISOLATE_REBUILD:
-        step_isolate_and_rebuild(driver)
+        detected_title = step_isolate_and_rebuild(driver)
+        log(f"TITLE DETECTED: {detected_title!r}")
 
     # Các bước còn lại chạy sau trên DOM đã rebuild
     if ADV_HIDE_CSS:
@@ -790,7 +852,7 @@ def save_pdf(driver, filename):
 # Các keyword tìm nút "Chương sau" — thêm vào nếu gặp site dùng chữ khác
 NEXT_CHAPTER_KEYWORDS = [
     "chương sau", "chương tiếp", "next chapter", "tiếp theo",
-    "trang sau", "next", "»", "→", "Tiếp", ">>"
+    "trang sau", "next", "»", "→", "Tiếp", ">>", "Đọc tiếp", "Next", "Next Chapter"
 ]
 
 
