@@ -1,5 +1,7 @@
 import time
 import os
+import shutil
+import tempfile
 import base64
 import fitz
 import logging
@@ -57,6 +59,16 @@ PDF_SMART_CROP      = config.RAWDL_PDF_SMART_CROP
 CROP_TOP_FIRST_PAGE = config.RAWDL_CROP_TOP_FIRST_PAGE
 REMOVE_LAST_N_PAGES = config.RAWDL_REMOVE_LAST_N_PAGES
 
+# ------------------------------------------------------------------------------
+# ===== DOWNLOAD TRỰC TIẾP TỪ WEB CONFIG (giá trị nằm trong config.py) ========
+# ------------------------------------------------------------------------------
+DIRECT_DOWNLOAD_ENABLED      = config.RAWDL_DIRECT_DOWNLOAD_ENABLED
+DIRECT_DOWNLOAD_BUTTON_TEXTS = config.RAWDL_DIRECT_DOWNLOAD_BUTTON_TEXTS
+DIRECT_DOWNLOAD_TIMEOUT      = config.RAWDL_DIRECT_DOWNLOAD_TIMEOUT
+
+# Thư mục tạm chứa file vừa tải xuống trước khi đổi tên/di chuyển vào SAVE_PATH.
+DIRECT_DOWNLOAD_TMP_ROOT = os.path.join(tempfile.gettempdir(), "rawdl_dltmp")
+
 
 # ==============================================================================
 # ===== INITIAL SETUP ==========================================================
@@ -64,6 +76,9 @@ REMOVE_LAST_N_PAGES = config.RAWDL_REMOVE_LAST_N_PAGES
 
 os.makedirs(SAVE_PATH, exist_ok=True)
 os.makedirs(LOG_PATH,  exist_ok=True)
+
+if DIRECT_DOWNLOAD_ENABLED:
+    os.makedirs(DIRECT_DOWNLOAD_TMP_ROOT, exist_ok=True)
 
 
 # ==============================================================================
@@ -270,10 +285,53 @@ ANTI_DEVTOOL_DETECT_JS = """
 """
 
 
+def _setup_direct_download(driver):
+    """
+    Tạo 1 thư mục tạm RIÊNG cho driver này rồi ép Chrome LƯU file (thay vì mở
+    PDF bằng viewer nội bộ) vào đúng thư mục đó — cần thiết để bấm nút tải
+    PDF do site cung cấp (VD "Tải PDF") thực sự tải được file xuống đĩa.
+
+    Gắn đường dẫn thư mục vào driver._direct_dl_dir để direct_download_pdf()
+    dùng lại. Set cả 2 cấp lệnh CDP để chắc ăn:
+      - Browser.setDownloadBehavior : áp dụng cho TOÀN BỘ browser, kể cả tab
+        mới mở (site có thể mở tab mới để trả file, target="_blank").
+      - Page.setDownloadBehavior    : dự phòng cho bản chromedriver cũ không
+        hỗ trợ lệnh Browser.*.
+    """
+    dl_dir = tempfile.mkdtemp(prefix="dl_", dir=DIRECT_DOWNLOAD_TMP_ROOT)
+    params = {"behavior": "allow", "downloadPath": dl_dir}
+
+    cdp_ok = False
+    try:
+        driver.execute_cdp_cmd("Browser.setDownloadBehavior", params)
+        cdp_ok = True
+    except Exception as e:
+        log_err(f"[DirectDownload] Browser.setDownloadBehavior lỗi: {e}")
+    try:
+        driver.execute_cdp_cmd("Page.setDownloadBehavior", params)
+        cdp_ok = True
+    except Exception as e:
+        log_err(f"[DirectDownload] Page.setDownloadBehavior lỗi: {e}")
+
+    if not cdp_ok:
+        # Cả 2 lệnh CDP đều lỗi -> Chrome sẽ KHÔNG lưu file vào dl_dir, mà
+        # rơi về thư mục download mặc định của hệ thống (hoặc hiện hộp
+        # thoại). wait_for_completed_download() sẽ luôn timeout vì nó chỉ
+        # theo dõi đúng dl_dir này. Ghi log rõ để dễ tra khi debug.
+        log_err(f"[DirectDownload] CẢNH BÁO: không redirect được download vào {dl_dir} — "
+                f"direct_download_pdf() sẽ luôn báo timeout dù nút bấm và tải thành công.")
+
+    driver._direct_dl_dir = dl_dir
+
+
 def create_driver():
     options = uc.ChromeOptions()
     options.add_argument("--kiosk-printing")
     options.add_argument("--lang=vi-VN")
+    options.add_argument("--disable-features=CalculateNativeWinOcclusion")
+    options.add_argument("--disable-backgrounding-occluded-windows")
+    options.add_argument("--disable-background-timer-throttling")
+    options.add_argument("--disable-renderer-backgrounding")
     chrome_version = get_local_chrome_version()
     with _driver_create_lock:
         # use_subprocess=True bắt buộc phải có khi tạo driver trong thread
@@ -307,15 +365,25 @@ def create_driver():
                 pass
         driver.switch_to.window(handles[0])
 
+    if DIRECT_DOWNLOAD_ENABLED:
+        _setup_direct_download(driver)
+
     return driver
 
 
 def safe_quit(driver):
-    """Đóng driver an toàn — undetected-chromedriver đôi khi ném lỗi vô hại lúc quit()."""
+    """Đóng driver an toàn — undetected-chromedriver đôi khi ném lỗi vô hại lúc quit().
+    Dọn luôn thư mục tải tạm riêng của driver này nếu có (chế độ download trực tiếp)."""
+    dl_dir = getattr(driver, "_direct_dl_dir", None)
     try:
         driver.quit()
     except Exception:
         pass
+    if dl_dir:
+        try:
+            shutil.rmtree(dl_dir, ignore_errors=True)
+        except Exception:
+            pass
 
 
 def goto(driver, url):
@@ -843,6 +911,169 @@ def save_pdf(driver, filename):
 
 
 # ==============================================================================
+# ===== DOWNLOAD TRỰC TIẾP TỪ WEB ==============================================
+# Một số site tự cung cấp sẵn nút tải PDF (VD: "Tải PDF") thay vì phải tự in
+# trang thành PDF (Page.printToPDF). Khi bật RAWDL_DIRECT_DOWNLOAD_ENABLED,
+# pipeline sẽ ưu tiên tìm 1 trong các nút liệt kê ở
+# RAWDL_DIRECT_DOWNLOAD_BUTTON_TEXTS (config.py) và bấm để tải file gốc do
+# site cung cấp — áp dụng cho CẢ 2 CRAWL_MODE (index và navigate).
+#
+# Nếu KHÔNG tìm thấy nút nào trên trang -> tự động rơi về (fallback) phương
+# án in trang thành PDF như cũ (xem worker()), không cần cấu hình gì thêm.
+# ==============================================================================
+
+def _list_files(dir_path):
+    try:
+        return set(os.listdir(dir_path))
+    except Exception:
+        return set()
+
+
+def find_direct_download_button(driver, button_texts):
+    """
+    Tìm 1 trong các nút tải PDF trực tiếp do site cung cấp.
+    - Khớp theo text HIỂN THỊ của <a>/<button>, không phân biệt hoa/thường.
+    - Khớp kiểu "chứa chuỗi con" (không cần khớp tuyệt đối) để dễ khớp với
+      nút có thêm icon/khoảng trắng quanh chữ (VD: "⬇ Tải PDF").
+    - button_texts lấy từ RAWDL_DIRECT_DOWNLOAD_BUTTON_TEXTS (config.py) — có
+      thể bổ sung thêm mẫu mới vào đó khi gặp site dùng chữ khác.
+    """
+    texts_lower = [t.strip().lower() for t in button_texts if t and t.strip()]
+    if not texts_lower:
+        return None
+
+    candidates = []
+    for tag in ("a", "button"):
+        try:
+            candidates.extend(driver.find_elements("tag name", tag))
+        except Exception:
+            pass
+
+    for el in candidates:
+        try:
+            if not el.is_displayed():
+                continue
+            text = (el.text or "").strip().lower()
+            if not text:
+                continue
+            if any(t in text for t in texts_lower):
+                return el
+        except Exception:
+            continue
+    return None
+
+
+def wait_for_completed_download(download_dir, before_files, timeout):
+    """
+    Đợi 1 file MỚI xuất hiện trong download_dir và tải xong. Chrome đặt đuôi
+    tạm (.crdownload/.tmp/.part) trong lúc tải, xoá đuôi này khi tải xong ->
+    chỉ nhận file KHÔNG còn đuôi tạm, và double-check size không còn tăng
+    (đề phòng file vừa đổi tên xong nhưng ghi đĩa chưa kịp hoàn tất).
+
+    Trả về đường dẫn file khi thành công, None nếu hết thời gian chờ.
+    """
+    TEMP_EXT = (".crdownload", ".tmp", ".part")
+    deadline = time.time() + timeout
+
+    while time.time() < deadline:
+        new_files = _list_files(download_dir) - before_files
+        finished = [f for f in new_files if not f.lower().endswith(TEMP_EXT)]
+        if finished:
+            candidate = max(
+                (os.path.join(download_dir, f) for f in finished),
+                key=lambda p: os.path.getmtime(p)
+            )
+            try:
+                size1 = os.path.getsize(candidate)
+                time.sleep(0.3)
+                size2 = os.path.getsize(candidate)
+                if size1 == size2:
+                    return candidate
+            except OSError:
+                pass
+        time.sleep(0.5)
+    return None
+
+
+def direct_download_pdf(driver, filename):
+    """
+    Thử tải PDF TRỰC TIẾP do site cung cấp (bấm 1 trong các nút cấu hình ở
+    DIRECT_DOWNLOAD_BUTTON_TEXTS), lưu vào SAVE_PATH/filename — ĐÚNG cách đặt
+    tên hiện tại của RawDowloader (không dùng tên file gốc do site đặt).
+
+    Trả về:
+      True  — tải thành công.
+      False — KHÔNG tìm thấy nút nào trên trang này -> nơi gọi (worker())
+              sẽ tự fallback sang phương án in trang thành PDF (save_pdf)
+              như cũ.
+
+    Ném Exception nếu tìm thấy nút nhưng bấm/tải không thành công — để vòng
+    lặp retry ở worker() xử lý giống các lỗi khác (thử lại), thay vì âm thầm
+    fallback sang phương án khác và có thể lưu nhầm nội dung không mong muốn.
+    """
+    download_dir = getattr(driver, "_direct_dl_dir", None)
+    if not download_dir:
+        # Driver chưa được cấu hình thư mục tải riêng (VD bật config sau khi
+        # driver đã tạo) -> coi như direct download không khả dụng lúc này.
+        return False
+
+    button = find_direct_download_button(driver, DIRECT_DOWNLOAD_BUTTON_TEXTS)
+    if button is None:
+        return False
+
+    before_handles = set(driver.window_handles)
+    before_files = _list_files(download_dir)
+    original_handle = driver.current_window_handle
+
+    button.click()
+
+    # QUAN TRỌNG: phải CHỜ TẢI XONG (hoặc hết timeout) TRƯỚC KHI đóng tab
+    # mới. Trước đây code đóng tab mới sau đúng 0.5s — nếu site mở
+    # target="_blank" và server cần vài giây để generate/trả file (PDF
+    # dựng động), request vẫn đang ở tab đó và CHƯA kịp được browser nhận
+    # diện là 1 download (chưa có response header) thì bị đóng tab sẽ HỦY
+    # LUÔN request → không bao giờ có file, dù bấm nút và mạng đều ổn.
+    # Đây rất có thể là lý do site tải được bằng Playwright (expect_download
+    # đợi tới 30s, không đụng tới tab) nhưng lại fail ở đây.
+    downloaded_path = wait_for_completed_download(download_dir, before_files, DIRECT_DOWNLOAD_TIMEOUT)
+
+    # Dọn tab mới (nếu có) SAU KHI đã xong việc chờ — không còn nguy cơ hủy
+    # ngang download nữa.
+    new_handles = [h for h in driver.window_handles if h not in before_handles]
+    for h in new_handles:
+        try:
+            driver.switch_to.window(h)
+            driver.close()
+        except Exception:
+            pass
+    try:
+        driver.switch_to.window(original_handle)
+    except Exception:
+        pass
+
+    if not downloaded_path:
+        raise RuntimeError(
+            f"Tìm thấy nút tải PDF trực tiếp nhưng không tải xong file "
+            f"trong {DIRECT_DOWNLOAD_TIMEOUT}s (dự kiến lưu: {filename})"
+        )
+
+    dest_path = os.path.join(SAVE_PATH, filename)
+    if os.path.exists(dest_path):
+        os.remove(dest_path)
+    shutil.move(downloaded_path, dest_path)
+
+    # Dọn file rác còn sót trong thư mục tạm (VD .crdownload lỗi từ lần thử
+    # trước) để lần tải kế tiếp không bị nhận nhầm là "file mới".
+    for f in _list_files(download_dir):
+        try:
+            os.remove(os.path.join(download_dir, f))
+        except Exception:
+            pass
+
+    return True
+
+
+# ==============================================================================
 # ===== NAVIGATE MODE — PHASE 1: THU THẬP URL =================================
 # Dùng 1 driver duy nhất, đi từ URL_FIRST_CHAPTER, bấm nút "Chương sau"
 # liên tục cho đến khi không tìm được nút hoặc URL lặp lại.
@@ -1196,9 +1427,14 @@ def worker(queue, completed_set, total, counter):
             try:
                 goto(driver, url)
 
-                scroll_full_page(driver)
-                run_ad_removal(driver, domain)
-                save_pdf(driver, filename)
+                downloaded_directly = False
+                if DIRECT_DOWNLOAD_ENABLED:
+                    downloaded_directly = direct_download_pdf(driver, filename)
+
+                if not downloaded_directly:
+                    scroll_full_page(driver)
+                    run_ad_removal(driver, domain)
+                    save_pdf(driver, filename)
 
                 log(f"SUCCESS: {filename}")
                 success = True
@@ -1252,6 +1488,10 @@ def run_download(chapters):
 
 def main():
     log_session_start()
+
+    if DIRECT_DOWNLOAD_ENABLED:
+        print(f"[Direct Download] BẬT — sẽ ưu tiên bấm nút: {DIRECT_DOWNLOAD_BUTTON_TEXTS}")
+        print("[Direct Download] (không tìm thấy nút thì tự fallback in trang thành PDF)")
 
     if CRAWL_MODE == "navigate":
         # ── Phase 1: Thu thập URL (1 worker, lưu vào Prepare log) ──────────────

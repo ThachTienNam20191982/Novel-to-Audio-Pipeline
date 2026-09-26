@@ -128,6 +128,7 @@ FIELD_SPECS = [
     ("RAWDL_ADV_REMOVE_INLINE", "Xoá banner/link quảng cáo trong nội dung", "checkbox", None, "simple"),
     ("RAWDL_ADV_REMOVE_OVERLAYS", "Xoá overlay/iframe nổi", "checkbox", None, "simple"),
     ("RAWDL_ADV_REMOVE_DOMAIN_NOISE", "Xoá noise riêng theo domain", "checkbox", None, "simple"),
+    ("RAWDL_DIRECT_DOWNLOAD_ENABLED", "Tải PDF trực tiếp từ web (bấm nút do site cung cấp, vd 'Tải PDF')", "checkbox", None, "simple"),
     ("RAWDL_PDF_SMART_CROP", "Crop PDF thông minh", "checkbox", None, "simple"),
     ("RAWDL_START_CHAPTER", "Chương bắt đầu", "entry", None, "advanced"),
     ("RAWDL_END_CHAPTER", "Chương kết thúc", "entry", None, "advanced"),
@@ -142,6 +143,8 @@ FIELD_SPECS = [
     ("RAWDL_ADV_EXTRA_WAIT_AFTER", "Chờ thêm SAU khi xoá quảng cáo (giây)", "entry", None, "advanced"),
     ("RAWDL_CROP_TOP_FIRST_PAGE", "Px cắt đầu trang 1", "entry", None, "advanced"),
     ("RAWDL_REMOVE_LAST_N_PAGES", "Số trang xoá cuối PDF", "entry", None, "advanced"),
+    ("RAWDL_DIRECT_DOWNLOAD_BUTTON_TEXTS", "Danh sách text nút tải PDF trực tiếp (mỗi dòng 1 mẫu, không phân biệt hoa/thường)", "multiline_list", None, "advanced"),
+    ("RAWDL_DIRECT_DOWNLOAD_TIMEOUT", "Thời gian tối đa chờ tải file (giây) khi dùng download trực tiếp", "entry", None, "advanced"),
 
     ("TEXTEXTRACT_MIN_WORD_COUNT", "Ngưỡng nghi ngờ file ngắn (số từ)", "entry", None, "advanced"),
     ("TEXTEXTRACT_ANOMALY_THRESHOLD", "Ngưỡng bất thường (0-1)", "entry", None, "advanced"),

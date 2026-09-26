@@ -11,7 +11,7 @@ import os
 # ------------------------------------------------------------------------------
 # ⭐ CHỈ CẦN SỬA DÒNG NÀY MỖI KHI CHUYỂN TRUYỆN ⭐
 # ------------------------------------------------------------------------------
-NOVEL_NAME = 'Hắc thiết chi bảo'
+NOVEL_NAME = 'Trưởng Thành Truyện Cổ Tích Bắt Đầu Chân Dài Tất Đen Cô Bé Quàng Khăn Đỏ'
 
 DATA_ROOT = "Data"
 BASE_DIR = os.path.join(DATA_ROOT, NOVEL_NAME)
@@ -44,20 +44,20 @@ RAWDL_CRAWL_MODE = 'navigate'
 #   START_CHAPTER : bỏ qua N chương đầu, bắt đầu lưu từ chương thứ N.
 #   END_CHAPTER   : dừng thu thập khi đạt đến chương này (999999 = lấy hết).
 RAWDL_START_CHAPTER = 1
-RAWDL_END_CHAPTER = 2055
+RAWDL_END_CHAPTER = 455
 RAWDL_URL_TEMPLATE = ''
 
 # Dùng khi CRAWL_MODE = "navigate"
-RAWDL_URL_FIRST_CHAPTER = 'https://wikicv.org/truyen/hac-thiet-chi-bao/chuong-1-hac-thiet-thoi-dai-tien-den-WRURTO8h7B1bTbcQ'
+RAWDL_URL_FIRST_CHAPTER = 'https://www.tvtruyen.space/truong-thanh-truyen-co-tich-bat-dau-chan-dai-tat-den-co-be-quang-khan-do/chuong-1'
 
-RAWDL_WORKER_COUNT = 5
+RAWDL_WORKER_COUNT = 3
 
-RAWDL_LOAD_WAIT_TIME = 4
-RAWDL_SCROLL_WAIT_TIME = 1.5
-RAWDL_CHAPTER_DELAY = 2
+RAWDL_LOAD_WAIT_TIME = 2
+RAWDL_SCROLL_WAIT_TIME = 1.0
+RAWDL_CHAPTER_DELAY = 1
 
 RAWDL_MAX_RETRY = 3
-RAWDL_RETRY_DELAY = 3
+RAWDL_RETRY_DELAY = 1
 
 # --- Ad-removal: bật/tắt từng bước xử lý quảng cáo độc lập ---
 # Khuyến nghị: chỉ bật ADV_ISOLATE_REBUILD là đủ cho hầu hết site. Nếu sau khi
@@ -80,7 +80,7 @@ RAWDL_ADV_REMOVE_OVERLAYS = True
 RAWDL_ADV_REMOVE_DOMAIN_NOISE = True
 
 # giây chờ thêm TRƯỚC ad-removal; đặt 0 để bỏ qua
-RAWDL_ADV_EXTRA_WAIT_BEFORE = 2
+RAWDL_ADV_EXTRA_WAIT_BEFORE = 1
 
 # giây chờ thêm SAU ad-removal; đặt 0 để bỏ qua
 RAWDL_ADV_EXTRA_WAIT_AFTER = 1
@@ -93,6 +93,17 @@ RAWDL_CROP_TOP_FIRST_PAGE = 250
 
 # số trang xóa ở cuối PDF (quảng cáo/mục lục)
 RAWDL_REMOVE_LAST_N_PAGES = 6
+
+# --- Download PDF trực tiếp từ web (site tự cung cấp sẵn nút tải, VD "Tải PDF") ---
+RAWDL_DIRECT_DOWNLOAD_ENABLED = True
+
+# Danh sách text nút cần tìm
+RAWDL_DIRECT_DOWNLOAD_BUTTON_TEXTS = [
+    'Tải PDF',
+]
+
+# giây chờ tối đa cho 1 lần tải file khi dùng download trực tiếp
+RAWDL_DIRECT_DOWNLOAD_TIMEOUT = 30
 
 
 # ==============================================================================
@@ -116,7 +127,7 @@ TEXTEXTRACT_ANOMALY_THRESHOLD = 0.3
 # ==============================================================================
 # % — điều chỉnh ngưỡng "cắt nhiều" tại đây
 TEXTCLEANER_HEAVY_DELETE_THRESHOLD = 10
-TEXTCLEANER_ADD_CHAPTER_NUMBER = True
+TEXTCLEANER_ADD_CHAPTER_NUMBER = False
 
 
 # ==============================================================================
@@ -160,7 +171,7 @@ AUDIOGEN_RETRY_BACKOFF = 1.5
 AUDIOGEN_DELAY_BETWEEN_CHUNKS = (0.1, 0.2)
 AUDIOGEN_DELAY_BETWEEN_FILES = (0.3, 0.5)
 
-AUDIOGEN_TTS_CONCURRENT = 3
+AUDIOGEN_TTS_CONCURRENT = 6
 AUDIOGEN_MAX_WORKERS = 5
 AUDIOGEN_WORKER_STAGGER = 2.0
 
